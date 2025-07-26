@@ -20,7 +20,7 @@ Dự án sử dụng các công nghệ tiên tiến trong lĩnh vực xử lý n
 1. **Tạo môi trường ảo (virtual environment):**
      ```bash
      python3 -m venv venv
-     venv\Scripts\activate
+     source venv/Scripts/activate
      ```
 
 2. **Cài đặt các thư viện cần thiết:**

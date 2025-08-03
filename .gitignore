@@ -1,118 +1,185 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# ============================================================================
+# LEGAL QA PIPELINE - GITIGNORE (PRODUCTION READY)
+# ============================================================================
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env/
+# Virtual Environment
+# Bỏ qua thư mục môi trường ảo để không đưa các thư viện đã cài đặt lên git
 venv/
-ENV/
-env.bak/
-venv.bak/
+.venv/
+env/
+.env
+conda-env/
+pipenv/
+
+# Python cache & compiled files
+# Các file được Python tự động tạo ra
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
-eggs/
-parts/
-var/
-sdist/
-develop-eggs/
-.installed.cfg
-*.egg
+*.whl
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# ============================================================================
+# PROJECT ARTIFACTS (LARGE FILES - NOT FOR VERSION CONTROL)
+# ============================================================================
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Dữ liệu (thô và đã xử lý) - KHÔNG commit data
+data/
+data.zip
+*.csv
+*.json.gz
+*.pkl.gz
 
-# Unit test / coverage reports
+# Các mô hình đã huấn luyện và index - KHÔNG commit models
+models/
+indexes/
+checkpoints/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.faiss
+
+# Các báo cáo đánh giá được tạo ra
+reports/
+logs/
+*.log
+
+# ============================================================================
+# DEVELOPMENT & DEBUGGING FILES
+# ============================================================================
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+# Debug & test files
+debug_*.py
+test_*.py
+*_debug.py
+*_test.py
+
+# ============================================================================
+# IDE & EDITOR FILES
+# ============================================================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+# Vim/Neovim
+*.swp
+*.swo
+*.swn
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================================
+# SYSTEM & OS FILES
+# ============================================================================
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ============================================================================
+# SECURITY & SENSITIVE DATA
+# ============================================================================
+
+# Environment variables & secrets
+.env*
+secrets.json
+*.key
+*.pem
+*.crt
+*.p12
+config_local.py
+
+# API keys & tokens
+api_keys.txt
+*.token
+.secrets/
+
+# ============================================================================
+# BUILD & DEPLOYMENT
+# ============================================================================
+
+# Docker
+.dockerignore
+Dockerfile.local
+docker-compose.override.yml
+
+# CI/CD
+.github/workflows/
+.gitlab-ci.yml
+.travis.yml
+
+# Coverage reports
 htmlcov/
-.tox/
-.nox/
 .coverage
 .coverage.*
-.cache
-nosetests.xml
 coverage.xml
 *.cover
-.hypothesis/
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
+# ============================================================================
+# DOCUMENTATION BUILD
+# ============================================================================
 
 # Sphinx documentation
 docs/_build/
+docs/_static/
+docs/_templates/
 
-# PyBuilder
-target/
+# MkDocs
+site/
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# ============================================================================
+# TEMPORARY EXCLUSIONS (CAN BE REMOVED AFTER CLEANUP)
+# ============================================================================
 
-# IPython
-profile_default/
-ipython_config.py
+# PDF files (temporary - remove if needed)
+*.pdf
 
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
+# Specific files to ignore during development
+README.pdf 

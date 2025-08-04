@@ -1,8 +1,9 @@
-# 🚀 DEPLOYMENT GUIDE - LawBot
+# 🚀 DEPLOYMENT GUIDE - LawBot v6.2
 
 ## 📋 **Tổng quan**
 
-Hướng dẫn triển khai LawBot trong môi trường production với các tối ưu hóa về hiệu suất và bảo mật.
+Hướng dẫn triển khai LawBot trong môi trường production với các tối ưu hóa về hiệu suất và bảo mật.  
+**Balanced Optimized Pipeline v6.2** - Cân bằng giữa hiệu quả và dễ hiểu
 
 ## 🎯 **Môi trường Production**
 

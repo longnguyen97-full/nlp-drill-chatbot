@@ -15,12 +15,13 @@ from typing import Dict, List, Set
 from tqdm.auto import tqdm
 
 # Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import config
-from core import setup_logging
+from core.logging_utils import get_logger
 
-setup_logging()
+# Sử dụng logger đã được setup từ pipeline chính
+logger = get_logger(__name__)
 
 
 class DatasetFilter:
@@ -139,7 +140,7 @@ class DatasetFilter:
 
     def load_data(self):
         """Load all necessary data"""
-        logging.info("Loading data...")
+        logger.info("Loading data...")
 
         # Load training data
         with open(config.TRAIN_JSON_PATH, "r", encoding="utf-8") as f:
@@ -163,8 +164,8 @@ class DatasetFilter:
 
             self.doc_content_map[doc_id] = " ".join(all_content).lower()
 
-        logging.info(f"Loaded {len(self.train_data)} training samples")
-        logging.info(f"Loaded {len(self.corpus)} legal documents")
+        logger.info(f"Loaded {len(self.train_data)} training samples")
+        logger.info(f"Loaded {len(self.corpus)} legal documents")
 
     def extract_question_keywords(self, question: str) -> List[str]:
         """Extract keywords from question"""
@@ -204,7 +205,7 @@ class DatasetFilter:
         """
         Filter training data to remove samples with inappropriate ground truth
         """
-        logging.info("Filtering training data...")
+        logger.info("Filtering training data...")
 
         filtered_data = []
         filtered_out_count = 0
@@ -226,7 +227,7 @@ class DatasetFilter:
             if not valid_doc_ids:
                 # All doc_ids don't exist in corpus
                 filtered_out_count += 1
-                logging.debug(
+                logger.debug(
                     f"Filtered out (no valid doc_ids): '{question[:60]}...' -> docs {relevant_laws}"
                 )
                 continue

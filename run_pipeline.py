@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Legal QA Pipeline - Luong Toi Uu Duy Nhat (Fixed Mapping)
+Legal QA Pipeline - Luong Toi Uu Cuc Dai (Maximum Optimized Version)
 ==========================================================
 
 Pipeline hoan chinh cho he thong hoi-dap phap luat Viet Nam
 Su dung kien truc Retrieval-Rerank voi Bi-Encoder + Cross-Encoder
-Da duoc toi uu voi mapping fixes va hyperparameters chong overfitting
+Da duoc toi uu cuc dai voi 2 buoc chinh va logic thong minh toi da
 
 Tac gia: LawBot Team
-Phien ban: Optimized Pipeline v2.0
+Phien ban: Maximum Optimized Pipeline v5.0
 """
 
 import subprocess
@@ -33,18 +33,19 @@ from core.logging_utils import (
 
 
 class LegalQAPipeline:
-    """Pipeline toi uu cho Legal QA System voi logging chi tiet va mapping fixes"""
+    """Pipeline toi uu cuc dai cho Legal QA System voi 4 buoc chinh (v7.0)"""
 
-    def __init__(self, skip_filtering: bool = False):
+    def __init__(self, skip_filtering: bool = False, include_dapt: bool = True):
         self.skip_filtering = skip_filtering
+        self.include_dapt = include_dapt
         self.project_root = Path(__file__).parent
         self.scripts_dir = self.project_root / "scripts"
 
         # Setup logging
         self.setup_logging()
 
-        # Dinh nghia cac buoc pipeline toi uu
-        self.pipeline_steps = self._define_pipeline_steps()
+        # Dinh nghia 4 buoc chinh toi uu cuc dai
+        self.pipeline_steps = self._define_maximum_optimized_pipeline_steps()
 
         # Progress tracker
         self.progress_tracker = ProgressTracker(len(self.pipeline_steps))
@@ -56,118 +57,56 @@ class LegalQAPipeline:
         self.logger = get_logger(__name__)
         self.logger.info(f"[START] Bat dau Legal QA Pipeline - Log file: {log_file}")
 
-    def _define_pipeline_steps(self) -> List[Dict]:
-        """Dinh nghia cac buoc pipeline toi uu voi mapping fixes"""
-        steps = [
-            {
-                "id": "00",
-                "name": "Kiem tra Moi truong",
-                "script": "01_check_environment.py",
-                "description": "Kiem tra Python, CUDA, dependencies, file data",
-                "required": True,
-                "estimated_time": "30s",
-            }
-        ]
+    def _define_maximum_optimized_pipeline_steps(self) -> List[Dict]:
+        """Dinh nghia 4 buoc chinh toi uu cuc dai cho v7.0 (Cascaded Reranking)"""
+        steps = []
 
-        if not self.skip_filtering:
+        # Bước 0: DAPT (tùy chọn)
+        if self.include_dapt:
             steps.append(
                 {
-                    "id": "00a",
-                    "name": "Loc Dataset Chat luong",
-                    "script": "02_filter_dataset.py",
-                    "description": "Loai bo 70-90% samples co ground truth khong phu hop",
-                    "required": True,
-                    "estimated_time": "2-5 phut",
+                    "id": "00",
+                    "name": "Domain-Adaptive Pre-training (DAPT) - PhoBERT-Law",
+                    "script": "00_adapt_model.py",
+                    "description": "Chuyen môn hóa PhoBERT thành PhoBERT-Law cho pháp luật",
+                    "required": False,  # Optional but recommended
+                    "estimated_time": "60-120 phut",
                 }
             )
 
+        # Các bước bắt buộc
         steps.extend(
             [
                 {
                     "id": "01",
-                    "name": "Tien xu ly Du lieu (Fixed Mapping)",
-                    "script": "03_preprocess_data.py",
-                    "description": "Tao aid_map.pkl, doc_id_to_aids.json, FIX MAPPING ISSUES",
+                    "name": "Environment & Data Processing Pipeline",
+                    "script": "01_check_environment.py",
+                    "description": "Environment check + Data validation + Processing + Splitting + Mapping validation",
                     "required": True,
-                    "estimated_time": "1-2 phut",
+                    "estimated_time": "15-20 phut",
                 },
                 {
                     "id": "02",
-                    "name": "Chia Du lieu",
-                    "script": "04_split_data.py",
-                    "args": ["--type", "raw"],
-                    "description": "Chia train.json thanh train/validation (85%/15%)",
-                    "required": True,
-                    "estimated_time": "30s",
-                },
-                {
-                    "id": "03",
-                    "name": "Validate Mapping",
-                    "script": "05_validate_mapping.py",
-                    "description": "Dam bao validation data co mapping dung cho evaluation",
-                    "required": True,
-                    "estimated_time": "1 phut",
-                },
-                {
-                    "id": "04",
-                    "name": "Chuan bi Training Data (Optimized)",
-                    "script": "06_prepare_training_data.py",
-                    "description": "Tao triplets (bi-encoder) va pairs (cross-encoder) voi hard negatives",
-                    "required": True,
-                    "estimated_time": "5-10 phut",
-                },
-                {
-                    "id": "05",
-                    "name": "Merge Training Data",
-                    "script": "07_merge_data.py",
-                    "args": ["--type", "both"],
-                    "description": "Merge easy + hard negatives cho ca 2 models",
-                    "required": True,
-                    "estimated_time": "1 phut",
-                },
-                {
-                    "id": "06",
-                    "name": "Data Augmentation",
-                    "script": "08_augment_data.py",
-                    "args": ["--type", "both"],
-                    "description": "Tang cuong du lieu (1.5x bi-encoder, 1.3x cross-encoder)",
-                    "required": True,
-                    "estimated_time": "2-3 phut",
-                },
-                {
-                    "id": "07",
-                    "name": "Huan luyen Bi-Encoder (Optimized)",
-                    "script": "09_train_bi_encoder.py",
-                    "description": "Huan luyen model tim kiem nhanh voi anti-overfitting (30-60 phut)",
-                    "required": True,
-                    "estimated_time": "30-60 phut",
-                },
-                {
-                    "id": "08",
-                    "name": "Xay dung FAISS Index",
-                    "script": "10_build_faiss_index.py",
-                    "description": "Tao index cho retrieval nhanh",
-                    "required": True,
-                    "estimated_time": "5-10 phut",
-                },
-                {
-                    "id": "09",
-                    "name": "Huan luyen Cross-Encoder (Optimized)",
-                    "script": "11_train_cross_encoder.py",
-                    "description": "Huan luyen model danh gia chinh xac voi anti-overfitting (60-120 phut)",
-                    "required": True,
-                    "estimated_time": "60-120 phut",
-                },
-                {
-                    "id": "10",
-                    "name": "Danh gia Pipeline (Fixed Mapping)",
-                    "script": "12_evaluate_pipeline.py",
-                    "description": "Danh gia toan dien voi mapping da fix: P@5, R@5, MRR, F1@5",
+                    "name": "Training Data Preparation Pipeline",
+                    "script": "02_prepare_training_data.py",
+                    "description": "Hard Negative Mining + Create triplets/pairs + Merge data + Augmentation + Save training files",
                     "required": True,
                     "estimated_time": "10-15 phut",
                 },
             ]
         )
+
+        if not self.skip_filtering:
+            steps.append(
+                {
+                    "id": "03",
+                    "name": "Model Training & Evaluation Pipeline",
+                    "script": "03_train_models.py",
+                    "description": "Bi-Encoder training + FAISS index + Cross-Encoder training + MiniLM-L6 training + Evaluation",
+                    "required": True,
+                    "estimated_time": "120-200 phut",
+                }
+            )
 
         return steps
 
@@ -287,7 +226,7 @@ class LegalQAPipeline:
     def run_pipeline(self, start_step: Optional[str] = None) -> bool:
         """Chay toan bo pipeline hoac tu buoc cu the voi logging chi tiet"""
         self.logger.info(
-            "[TARGET] LEGAL QA PIPELINE - LUONG TOI UU DUY NHAT (FIXED MAPPING)"
+            "[TARGET] LEGAL QA PIPELINE - LUONG TOI UU CAN BANG (BALANCED OPTIMIZED V6.2)"
         )
         self.logger.info("=" * 80)
 
@@ -371,8 +310,10 @@ class LegalQAPipeline:
         self.logger.info(
             f"[STATS] Thong ke: Thanh cong {successful_steps}, That bai {failed_steps}, Bo qua {skipped_steps}"
         )
-        self.logger.info("[WIN] He thong Legal QA da san sang su dung!")
-        self.logger.info("[NOTE] Mapping issues da duoc fix, metrics se chinh xac hon!")
+        self.logger.info("[WIN] He thong Legal QA v7.0 da san sang su dung!")
+        self.logger.info(
+            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Cascaded Reranking) va logic ro rang!"
+        )
 
         # Tao bao cao tong ket
         summary = create_summary_report(steps_info, total_time)
@@ -392,7 +333,9 @@ class LegalQAPipeline:
 
     def show_steps(self):
         """Hien thi danh sach cac buoc voi thong tin chi tiet"""
-        self.logger.info("[LIST] DANH SACH CAC BUOC PIPELINE (OPTIMIZED):")
+        self.logger.info(
+            "[LIST] DANH SACH CAC BUOC PIPELINE (CASCADED RERANKING V7.0):"
+        )
         self.logger.info("=" * 80)
 
         for i, step in enumerate(self.pipeline_steps, 1):
@@ -408,27 +351,33 @@ class LegalQAPipeline:
 
         self.logger.info("[REQUIRED] = Bat buoc | [OPTIONAL] = Tuy chon")
         self.logger.info(
-            "[NOTE] Pipeline da duoc toi uu voi mapping fixes va anti-overfitting"
+            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Cascaded Reranking), logic ro rang, va best practices"
         )
 
 
 def main():
     """Ham chinh"""
     parser = argparse.ArgumentParser(
-        description="[START] Legal QA Pipeline - Luong Toi Uu Duy Nhat voi Mapping Fixes",
+        description="[START] Legal QA Pipeline v7.0 - Cascaded Reranking (State-of-the-Art)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Vi du su dung:
-  python run_pipeline.py                    # Chay toan bo pipeline
-  python run_pipeline.py --step 05         # Chay tu buoc 05
-  python run_pipeline.py --skip-filtering  # Bo qua filtering
-  python run_pipeline.py --list-steps      # Xem danh sach buoc
+  python run_pipeline.py                    # Chay toan bo pipeline (bao gom DAPT)
+  python run_pipeline.py --no-dapt          # Chay pipeline khong bao gom DAPT
+  python run_pipeline.py --step 02          # Chay tu buoc 02
+  python run_pipeline.py --skip-filtering   # Bo qua buoc filtering dataset
+  python run_pipeline.py --list-steps       # Xem danh sach buoc
         """,
     )
 
-    parser.add_argument("--step", help="Chay tu buoc cu the (VD: 01, 02, 05)")
+    parser.add_argument("--step", help="Chay tu buoc cu the (VD: 00, 01, 02, 03)")
     parser.add_argument(
         "--skip-filtering", action="store_true", help="Bo qua buoc filtering dataset"
+    )
+    parser.add_argument(
+        "--no-dapt",
+        action="store_true",
+        help="Bo qua buoc DAPT (Domain-Adaptive Pre-training)",
     )
     parser.add_argument(
         "--list-steps", action="store_true", help="Hien thi danh sach cac buoc"
@@ -437,7 +386,9 @@ Vi du su dung:
     args = parser.parse_args()
 
     # Tao pipeline
-    pipeline = LegalQAPipeline(skip_filtering=args.skip_filtering)
+    pipeline = LegalQAPipeline(
+        skip_filtering=args.skip_filtering, include_dapt=not args.no_dapt
+    )
 
     # Xu ly cac tuy chon
     if args.list_steps:

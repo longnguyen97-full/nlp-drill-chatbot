@@ -23,21 +23,11 @@ import numpy as np
 
 
 # ============================================================================
-# LOGGING SETUP
+# LOGGING SETUP (DEPRECATED - Use core.logging_utils instead)
 # ============================================================================
 
-
-def setup_logging():
-    """Cau hinh logging tieu chuan cho toan bo du an."""
-    # Import logging utils
-    from core.logging_utils import setup_unified_logging
-
-    # Setup hoac su dung logger hien tai
-    log_file = setup_unified_logging("pipeline", "INFO")
-    if log_file != "existing_logger":
-        logging.info(f"Log file: {log_file}")
-    else:
-        logging.info("Su dung logger da duoc setup truoc do")
+# Note: setup_logging() function has been moved to core.logging_utils
+# Use get_logger() from core.logging_utils instead
 
 
 # ============================================================================
@@ -271,5 +261,4 @@ def load_config():
 # ============================================================================
 
 # Auto-setup when module is imported
-setup_logging()
 setup_script_paths()

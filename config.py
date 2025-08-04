@@ -68,6 +68,23 @@ PUBLIC_TEST_JSON_PATH = Path(
     get_env_var("LAWBOT_PUBLIC_TEST_PATH", str(DATA_RAW_DIR / "public_test.json"))
 )
 
+# Enhanced data collection files
+TRAIN_EXTENDED_PATH = Path(
+    get_env_var("LAWBOT_TRAIN_EXTENDED_PATH", str(DATA_RAW_DIR / "train_extended.json"))
+)
+TRAIN_ENHANCED_AUGMENTED_PATH = Path(
+    get_env_var(
+        "LAWBOT_TRAIN_ENHANCED_AUGMENTED_PATH",
+        str(DATA_RAW_DIR / "train_enhanced_augmented.json"),
+    )
+)
+TRAIN_EXTENDED_ENHANCED_AUGMENTED_PATH = Path(
+    get_env_var(
+        "LAWBOT_TRAIN_EXTENDED_ENHANCED_AUGMENTED_PATH",
+        str(DATA_RAW_DIR / "train_extended_enhanced_augmented.json"),
+    )
+)
+
 # Du lieu duoc chia de huan luyen va danh gia cuoi cung
 TRAIN_SPLIT_JSON_PATH = Path(
     get_env_var("LAWBOT_TRAIN_SPLIT_PATH", str(DATA_RAW_DIR / "train_split.json"))
@@ -176,6 +193,19 @@ CROSS_ENCODER_MODEL_NAME = get_env_var(
     "LAWBOT_CROSS_ENCODER_MODEL_NAME", "vinai/phobert-large"
 )
 
+# --- PhoBERT-Law Model Path (after DAPT) ---
+PHOBERT_LAW_PATH = Path(
+    get_env_var("LAWBOT_PHOBERT_LAW_PATH", str(MODELS_DIR / "phobert-law"))
+)
+
+# --- MiniLM-L6 Model Path (for Cascaded Reranking) ---
+MINILM_L6_PATH = Path(
+    get_env_var("LAWBOT_MINILM_L6_PATH", str(MODELS_DIR / "minilm-l6"))
+)
+MINILM_L6_MODEL_NAME = get_env_var(
+    "LAWBOT_MINILM_L6_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+)
+
 # ============================================================================
 # HYPERPARAMETERS (WITH ENVIRONMENT SUPPORT)
 # ============================================================================
@@ -232,6 +262,13 @@ MIN_VALIDATION_SAMPLES = get_env_int("LAWBOT_MIN_VALIDATION_SAMPLES", 100)
 TOP_K_RETRIEVAL = get_env_int("LAWBOT_TOP_K_RETRIEVAL", 100)
 TOP_K_FINAL = get_env_int("LAWBOT_TOP_K_FINAL", 5)
 EVAL_TEST_SIZE = get_env_float("LAWBOT_EVAL_TEST_SIZE", 0.15)
+
+# --- Tham so Cascaded Reranking ---
+TOP_K_LIGHT_RERANKING = get_env_int("LAWBOT_TOP_K_LIGHT_RERANKING", 50)
+LIGHT_RERANKING_WEIGHT = get_env_float("LAWBOT_LIGHT_RERANKING_WEIGHT", 0.7)
+RETRIEVAL_SCORE_WEIGHT = get_env_float("LAWBOT_RETRIEVAL_SCORE_WEIGHT", 0.3)
+MINILM_L6_BATCH_SIZE = get_env_int("LAWBOT_MINILM_L6_BATCH_SIZE", 16)
+MINILM_L6_MAX_LENGTH = get_env_int("LAWBOT_MINILM_L6_MAX_LENGTH", 256)
 
 # --- Tham so Toi Uu Hieu Suat ---
 MAX_SEQUENCE_LENGTH = get_env_int("LAWBOT_MAX_SEQUENCE_LENGTH", 256)

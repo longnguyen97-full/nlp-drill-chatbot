@@ -6,8 +6,6 @@ Import tat ca utilities can thiet tu core.py
 """
 
 from .core import (
-    # Logging
-    setup_logging,
     # Data Processing
     DataLoader,
     DataSaver,
@@ -24,7 +22,6 @@ from .core import (
 )
 
 __all__ = [
-    "setup_logging",
     "DataLoader",
     "DataSaver",
     "DataSplitter",

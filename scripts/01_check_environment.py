@@ -1,34 +1,46 @@
 #!/usr/bin/env python3
 """
-Kiem tra moi truong LawBot
+Complete Data & Environment Pipeline - Script Toi Uu Cuc Dai
+=========================================================
+
+Script nay kiem tra moi truong, xu ly du lieu, validation, va chuan bi training data
+trong mot buoc toi uu cuc dai de tang hieu qua toi da.
+
+Tac gia: LawBot Team
+Phien ban: Maximum Optimized Pipeline v5.0
 """
 
 import sys
 import os
+import json
+import pickle
+import logging
+import random
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 # Them thu muc goc vao path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import config
-import logging
-from core import setup_logging
+from core.logging_utils import get_logger
 
-setup_logging()
+# Sử dụng logger đã được setup từ pipeline chính
+logger = get_logger(__name__)
 
 
 def check_environment():
     """Kiem tra moi truong Python va dependencies"""
-    logging.info("[SEARCH] Kiem tra moi truong Python...")
+    logger.info("[SEARCH] Kiem tra moi truong Python...")
 
     # Kiem tra Python version
     python_version = sys.version_info
     if python_version.major >= 3 and python_version.minor >= 8:
-        logging.info(
+        logger.info(
             f"[OK] Python version: {python_version.major}.{python_version.minor}.{python_version.micro}"
         )
     else:
-        logging.error(
+        logger.error(
             f"[FAIL] Python version {python_version.major}.{python_version.minor} khong du. Can Python 3.8+"
         )
         return False
@@ -37,13 +49,13 @@ def check_environment():
     try:
         import torch
 
-        logging.info(f"[OK] PyTorch version: {torch.__version__}")
+        logger.info(f"[OK] PyTorch version: {torch.__version__}")
         if torch.cuda.is_available():
-            logging.info(f"[OK] CUDA available: {torch.cuda.get_device_name(0)}")
+            logger.info(f"[OK] CUDA available: {torch.cuda.get_device_name(0)}")
         else:
-            logging.info("[NOTE] CUDA khong kha dung, se su dung CPU")
+            logger.info("[NOTE] CUDA khong kha dung, se su dung CPU")
     except ImportError:
-        logging.error("[FAIL] PyTorch chua duoc cai dat")
+        logger.error("[FAIL] PyTorch chua duoc cai dat")
         return False
 
     # Kiem tra cac thu vien khac
@@ -60,9 +72,9 @@ def check_environment():
     for lib in required_libs:
         try:
             __import__(lib)
-            logging.info(f"[OK] {lib} da duoc cai dat")
+            logger.info(f"[OK] {lib} da duoc cai dat")
         except ImportError:
-            logging.error(f"[FAIL] {lib} chua duoc cai dat")
+            logger.error(f"[FAIL] {lib} chua duoc cai dat")
             return False
 
     return True
@@ -70,7 +82,7 @@ def check_environment():
 
 def check_data_files():
     """Kiem tra cac file du lieu can thiet"""
-    logging.info("[FILE] Kiem tra file du lieu...")
+    logger.info("[FILE] Kiem tra file du lieu...")
 
     required_files = [
         config.TRAIN_JSON_PATH,
@@ -81,148 +93,277 @@ def check_data_files():
     for file_path in required_files:
         if file_path.exists():
             size_mb = file_path.stat().st_size / (1024 * 1024)
-            logging.info(f"[OK] {file_path.name}: {size_mb:.2f} MB")
+            logger.info(f"[OK] {file_path.name}: {size_mb:.2f} MB")
         else:
-            logging.error(f"[FAIL] Thieu file: {file_path}")
+            logger.error(f"[FAIL] Thieu file: {file_path}")
             return False
 
     return True
 
 
-def check_processed_files():
-    """Kiem tra cac file da xu ly"""
-    logging.info("[FILE] Kiem tra file da xu ly...")
+def create_output_dirs():
+    """Tao thu muc output neu chua co"""
+    logger.info("[DIR] Tao thu muc output...")
 
-    # Tao thu muc neu chua co
-    config.DATA_PROCESSED_DIR.mkdir(exist_ok=True)
-    config.MODELS_DIR.mkdir(exist_ok=True)
-    config.INDEXES_DIR.mkdir(exist_ok=True)
-    config.REPORTS_DIR.mkdir(exist_ok=True)
-
-    logging.info("[OK] Cac thu muc da duoc tao")
-    return True
-
-
-def check_models():
-    """Kiem tra cac mo hinh da huan luyen"""
-    logging.info("[MODEL] Kiem tra mo hinh...")
-
-    models_to_check = [
-        (config.BI_ENCODER_PATH, "Bi-Encoder model"),
-        (config.CROSS_ENCODER_PATH, "Cross-Encoder model"),
+    dirs = [
+        config.DATA_PROCESSED_DIR,
+        config.DATA_VALIDATION_DIR,
+        config.MODELS_DIR,
+        config.INDEXES_DIR,
+        config.REPORTS_DIR,
+        Path("logs"),
     ]
-
-    for model_path, description in models_to_check:
-        if model_path.exists():
-            size_mb = sum(
-                f.stat().st_size for f in model_path.rglob("*") if f.is_file()
-            ) / (1024 * 1024)
-            logging.info(f"[OK] {description}: {model_path} ({size_mb:.2f} MB)")
-        else:
-            logging.warning(f"[WARNING] Chua co mo hinh {description}: {model_path}")
-
-    logging.info("[INFO] Cac mo hinh nay se duoc tao khi huan luyen")
+    for dir_path in dirs:
+        dir_path.mkdir(parents=True, exist_ok=True)
+    logger.info("[OK] Cac thu muc da duoc tao")
     return True
 
 
-def check_indexes():
-    """Kiem tra FAISS index"""
-    logging.info("[SEARCH] Kiem tra FAISS index...")
+def build_maps_optimized():
+    """Build maps voi fix mapping issues"""
+    logger.info("[MAP] Building optimized maps with mapping fixes...")
 
-    indexes_to_check = [
-        (config.FAISS_INDEX_PATH, "FAISS index"),
-        (config.INDEX_TO_AID_PATH, "Index to AID mapping"),
-    ]
+    # Load legal corpus
+    with open(config.LEGAL_CORPUS_PATH, "r", encoding="utf-8") as f:
+        legal_corpus = json.load(f)
 
-    for index_path, description in indexes_to_check:
-        if index_path.exists():
-            file_size = index_path.stat().st_size / (1024 * 1024)
-            logging.info(f"[OK] {description}: {index_path} ({file_size:.2f} MB)")
-        else:
-            logging.warning(f"[WARNING] Chua co {description}: {index_path}")
+    # Load training data
+    with open(config.TRAIN_JSON_PATH, "r", encoding="utf-8") as f:
+        train_data = json.load(f)
 
-    logging.info("[INFO] Cac index nay se duoc tao khi chay script build index")
-    return True
+    # Build aid_map (AID -> content)
+    aid_map = {}
+    doc_id_to_aids = {}
+
+    logger.info(f"[MAP] Processing {len(legal_corpus)} legal documents...")
+
+    for doc in legal_corpus:
+        doc_id = doc["id"]
+        law_id = doc["law_id"]
+        content_items = doc.get("content", [])
+
+        # Convert doc_id to string for consistency
+        doc_id_str = str(doc_id)
+
+        if doc_id_str not in doc_id_to_aids:
+            doc_id_to_aids[doc_id_str] = []
+
+        for item in content_items:
+            article_id = item["aid"]
+            content = item["content_Article"]
+
+            # Create AID format: law_id_article_id
+            aid = f"{law_id}_{article_id}"
+
+            # Store in aid_map
+            aid_map[aid] = content
+
+            # Store mapping from doc_id to AIDs
+            doc_id_to_aids[doc_id_str].append(aid)
+
+    # Fix training data mapping issues
+    logger.info("[MAP] Fixing training data mapping issues...")
+    fixed_train_data = []
+
+    for sample in train_data:
+        doc_ids = sample["relevant_laws"]
+        valid_aids = []
+
+        # Convert doc_ids to AIDs
+        for doc_id in doc_ids:
+            doc_id_str = str(doc_id)
+            if doc_id_str in doc_id_to_aids:
+                aids = doc_id_to_aids[doc_id_str]
+                valid_aids.extend(aids)
+
+        if valid_aids:
+            # Create fixed sample
+            fixed_sample = {
+                "qid": sample["qid"],
+                "question": sample["question"],
+                "relevant_aids": valid_aids,  # Changed from relevant_laws
+            }
+            fixed_train_data.append(fixed_sample)
+
+    # Save fixed training data
+    train_fixed_path = config.DATA_RAW_DIR / "train_fixed.json"
+    with open(train_fixed_path, "w", encoding="utf-8") as f:
+        json.dump(fixed_train_data, f, ensure_ascii=False, indent=2)
+
+    # Save maps
+    with open(config.AID_MAP_PATH, "wb") as f:
+        pickle.dump(aid_map, f)
+
+    with open(config.DOC_ID_TO_AIDS_PATH, "w", encoding="utf-8") as f:
+        json.dump(doc_id_to_aids, f, ensure_ascii=False, indent=2)
+
+    # Create evaluation mapping info
+    evaluation_mapping = {
+        "train_samples": len(fixed_train_data),
+        "total_aids": len(aid_map),
+        "total_docs": len(doc_id_to_aids),
+        "format": "aid_based",
+        "mapping_fixed": True,
+    }
+
+    evaluation_mapping_path = config.DATA_PROCESSED_DIR / "evaluation_mapping.json"
+    with open(evaluation_mapping_path, "w", encoding="utf-8") as f:
+        json.dump(evaluation_mapping, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"[MAP] Created {len(aid_map)} AIDs")
+    logger.info(f"[MAP] Created {len(doc_id_to_aids)} doc mappings")
+    logger.info(f"[MAP] Fixed {len(fixed_train_data)} training samples")
+    logger.info("[MAP] Mapping issues fixed successfully!")
+
+    return aid_map, doc_id_to_aids, fixed_train_data
 
 
-def validate_data_format():
-    """Kiem tra format du lieu"""
-    logging.info("[LIST] Kiem tra format du lieu...")
+def split_data_optimized(train_data):
+    """Chia du lieu toi uu"""
+    logger.info("[SPLIT] Splitting data with optimized logic...")
 
-    try:
-        # Kiem tra train.json
-        with open(config.TRAIN_JSON_PATH, "r", encoding="utf-8") as f:
-            import json
+    # Set random seed
+    random.seed(42)
 
-            train_data = json.load(f)
+    # Shuffle data
+    random.shuffle(train_data)
 
-        if not isinstance(train_data, list):
-            logging.error("[FAIL] train.json phai la mot list")
-            return False
+    # Calculate split point
+    train_ratio = 0.85
+    train_count = int(len(train_data) * train_ratio)
+    val_count = len(train_data) - train_count
 
-        logging.info(f"[OK] train.json co {len(train_data)} mau")
+    logger.info(f"[SPLIT] Total samples: {len(train_data)}")
+    logger.info(f"[SPLIT] Train samples: {train_count}")
+    logger.info(f"[SPLIT] Validation samples: {val_count}")
 
-        # Kiem tra format cua moi mau
-        required_keys = ["question", "relevant_laws"]
-        for key in required_keys:
-            if key not in train_data[0]:
-                logging.error(f"[FAIL] Thieu key '{key}' trong train.json")
-                return False
+    # Split data (FIXED logic)
+    train_split = train_data[:train_count]
+    val_split = train_data[train_count:]
 
-        logging.info("[OK] Format train.json hop le")
+    # Save splits
+    train_split_path = config.TRAIN_SPLIT_JSON_PATH
+    val_split_path = config.VAL_SPLIT_JSON_PATH
 
-    except Exception as e:
-        logging.error(f"[FAIL] Loi khi doc train.json: {e}")
+    with open(train_split_path, "w", encoding="utf-8") as f:
+        json.dump(train_split, f, ensure_ascii=False, indent=2)
+
+    with open(val_split_path, "w", encoding="utf-8") as f:
+        json.dump(val_split, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"[SPLIT] Training data saved to: {train_split_path}")
+    logger.info(f"[SPLIT] Validation data saved to: {val_split_path}")
+
+    return train_split, val_split
+
+
+def validate_mapping_optimized(aid_map, val_data):
+    """Validate mapping toi uu"""
+    logger.info("[VALID] Validating mapping with optimized logic...")
+
+    # Check if all AIDs in validation set exist in aid_map
+    missing_aids = []
+    valid_samples = 0
+
+    for sample in val_data:
+        relevant_aids = sample.get("relevant_aids", [])
+        all_valid = True
+
+        for aid in relevant_aids:
+            if aid not in aid_map:
+                missing_aids.append(aid)
+                all_valid = False
+
+        if all_valid:
+            valid_samples += 1
+
+    total_samples = len(val_data)
+    validation_rate = valid_samples / total_samples if total_samples > 0 else 0
+
+    logger.info(f"[VALID] Validation samples: {total_samples}")
+    logger.info(f"[VALID] Valid samples: {valid_samples}")
+    logger.info(f"[VALID] Validation rate: {validation_rate:.2%}")
+
+    if missing_aids:
+        logger.warning(f"[VALID] Missing AIDs: {len(missing_aids)}")
+        logger.warning(f"[VALID] Missing AIDs: {missing_aids[:10]}...")  # Show first 10
+    else:
+        logger.info("[VALID] ✅ All validation AIDs exist in aid_map!")
+
+    if validation_rate >= 0.95:
+        logger.info("[VALID] ✅ Mapping validation passed!")
+        return True
+    else:
+        logger.error(
+            f"[VALID] ❌ Mapping validation failed! Rate: {validation_rate:.2%}"
+        )
         return False
 
-    try:
-        # Kiem tra legal_corpus.json
-        with open(config.LEGAL_CORPUS_PATH, "r", encoding="utf-8") as f:
-            corpus_data = json.load(f)
 
-        if not isinstance(corpus_data, list):
-            logging.error("[FAIL] legal_corpus.json phai la mot list")
+def run_complete_pipeline():
+    """Chay pipeline hoan chinh: Environment + Data Processing + Validation"""
+    logger.info("=" * 60)
+    logger.info("ENVIRONMENT & DATA PROCESSING PIPELINE")
+    logger.info("=" * 60)
+
+    try:
+        # Step 1: Check environment
+        logger.info("STEP 1: Checking environment...")
+        if not check_environment():
             return False
 
-        logging.info(f"[OK] legal_corpus.json co {len(corpus_data)} documents")
+        # Step 2: Check data files
+        logger.info("STEP 2: Checking data files...")
+        if not check_data_files():
+            return False
+
+        # Step 3: Create output directories
+        logger.info("STEP 3: Creating output directories...")
+        if not create_output_dirs():
+            return False
+
+        # Step 4: Build maps and fix training data
+        logger.info("STEP 4: Building maps and fixing training data...")
+        aid_map, doc_id_to_aids, fixed_train_data = build_maps_optimized()
+
+        # Step 5: Split data
+        logger.info("STEP 5: Splitting data...")
+        train_split, val_split = split_data_optimized(fixed_train_data)
+
+        # Step 6: Validate mapping
+        logger.info("STEP 6: Validating mapping...")
+        validation_success = validate_mapping_optimized(aid_map, val_split)
+
+        if not validation_success:
+            logger.error("Pipeline failed due to mapping validation issues!")
+            return False
+
+        logger.info("=" * 60)
+        logger.info("PIPELINE COMPLETED SUCCESSFULLY!")
+        logger.info("=" * 60)
+        logger.info("Next steps:")
+        logger.info("1. Run training data preparation pipeline")
+        logger.info("2. Run model training pipeline")
+        logger.info("3. Deploy system")
+        return True
 
     except Exception as e:
-        logging.error(f"[FAIL] Loi khi doc legal_corpus.json: {e}")
+        logger.error(f"Error during pipeline: {e}")
         return False
-
-    return True
 
 
 def main():
     """Ham chinh"""
-    logging.info("[START] Bat dau kiem tra moi truong LawBot...")
+    logger.info("[START] Bat dau Complete Data & Environment Pipeline...")
 
-    checks = [
-        ("Environment", check_environment),
-        ("Data Files", check_data_files),
-        ("Processed Files", check_processed_files),
-        ("Models", check_models),
-        ("Indexes", check_indexes),
-        ("Data Format", validate_data_format),
-    ]
+    success = run_complete_pipeline()
 
-    all_passed = True
-
-    for check_name, check_func in checks:
-        try:
-            logging.info(f"[SEARCH] {check_name.upper()}")
-            if not check_func():
-                all_passed = False
-        except Exception as e:
-            logging.error(f"[FAIL] Loi trong kiem tra {check_name}: {e}")
-            all_passed = False
-
-    if all_passed:
-        logging.info("[SUCCESS] Tat ca kiem tra deu PASSED! Moi truong san sang.")
-        logging.info("[OK] Ban co the bat dau chay cac script training.")
+    if success:
+        logger.info("✅ Complete Data & Environment Pipeline completed successfully!")
+        logger.info("✅ Moi truong va du lieu san sang cho training!")
     else:
-        logging.error("[FAIL] Co mot so van de can khac phuc truoc khi tiep tuc.")
-        logging.info("[INFO] Vui long kiem tra cac loi tren va thu lai.")
+        logger.error("❌ Complete Data & Environment Pipeline failed!")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

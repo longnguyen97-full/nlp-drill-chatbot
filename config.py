@@ -198,12 +198,12 @@ PHOBERT_LAW_PATH = Path(
     get_env_var("LAWBOT_PHOBERT_LAW_PATH", str(MODELS_DIR / "phobert-law"))
 )
 
-# --- MiniLM-L6 Model Path (for Cascaded Reranking) ---
-MINILM_L6_PATH = Path(
-    get_env_var("LAWBOT_MINILM_L6_PATH", str(MODELS_DIR / "minilm-l6"))
+# --- Light Reranker Model Path (for Cascaded Reranking) ---
+LIGHT_RERANKER_PATH = Path(
+    get_env_var("LAWBOT_LIGHT_RERANKER_PATH", str(MODELS_DIR / "light-reranker"))
 )
-MINILM_L6_MODEL_NAME = get_env_var(
-    "LAWBOT_MINILM_L6_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+LIGHT_RERANKER_MODEL_NAME = get_env_var(
+    "LAWBOT_LIGHT_RERANKER_MODEL_NAME", "vinai/phobert-base-v2"
 )
 
 # ============================================================================
@@ -212,26 +212,41 @@ MINILM_L6_MODEL_NAME = get_env_var(
 
 # === TOI UU HOA DE KHAC PHUC OVERFITTING ===
 
-# --- Bi-Encoder Hyperparameters (DA TOI UU) ---
-BI_ENCODER_BATCH_SIZE = get_env_int("LAWBOT_BI_ENCODER_BATCH_SIZE", 4)
-BI_ENCODER_EPOCHS = get_env_int("LAWBOT_BI_ENCODER_EPOCHS", 1)
-BI_ENCODER_LR = get_env_float("LAWBOT_BI_ENCODER_LR", 1e-7)
-BI_ENCODER_WARMUP_STEPS = get_env_int("LAWBOT_BI_ENCODER_WARMUP_STEPS", 50)
-BI_ENCODER_EVAL_STEPS = get_env_int("LAWBOT_BI_ENCODER_EVAL_STEPS", 25)
+# --- Bi-Encoder Hyperparameters (OPTIMIZED FOR BETTER PERFORMANCE) ---
+BI_ENCODER_BATCH_SIZE = get_env_int(
+    "LAWBOT_BI_ENCODER_BATCH_SIZE", 16
+)  # Increased from 4
+BI_ENCODER_EPOCHS = get_env_int("LAWBOT_BI_ENCODER_EPOCHS", 3)  # Increased from 1
+BI_ENCODER_LR = get_env_float("LAWBOT_BI_ENCODER_LR", 2e-5)  # Increased from 1e-7
+BI_ENCODER_WARMUP_STEPS = get_env_int(
+    "LAWBOT_BI_ENCODER_WARMUP_STEPS", 100
+)  # Increased for better LR scheduling
+BI_ENCODER_EVAL_STEPS = get_env_int(
+    "LAWBOT_BI_ENCODER_EVAL_STEPS", 50
+)  # Increased for better monitoring
+BI_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int(
+    "LAWBOT_BI_ENCODER_GRADIENT_ACCUMULATION_STEPS", 2
+)  # Added for effective batch size control
 
-# --- Cross-Encoder Hyperparameters (DA TOI UU) ---
-CROSS_ENCODER_BATCH_SIZE = get_env_int("LAWBOT_CROSS_ENCODER_BATCH_SIZE", 4)
-CROSS_ENCODER_EPOCHS = get_env_int("LAWBOT_CROSS_ENCODER_EPOCHS", 1)
-CROSS_ENCODER_LR = get_env_float("LAWBOT_CROSS_ENCODER_LR", 5e-6)
+# --- Cross-Encoder Hyperparameters (OPTIMIZED FOR BETTER PERFORMANCE) ---
+CROSS_ENCODER_BATCH_SIZE = get_env_int(
+    "LAWBOT_CROSS_ENCODER_BATCH_SIZE", 8
+)  # Increased from 4
+CROSS_ENCODER_EPOCHS = get_env_int("LAWBOT_CROSS_ENCODER_EPOCHS", 5)  # Increased from 1
+CROSS_ENCODER_LR = get_env_float("LAWBOT_CROSS_ENCODER_LR", 2e-5)  # Increased from 5e-6
 CROSS_ENCODER_MAX_LENGTH = get_env_int("LAWBOT_CROSS_ENCODER_MAX_LENGTH", 256)
-CROSS_ENCODER_WARMUP_STEPS = get_env_int("LAWBOT_CROSS_ENCODER_WARMUP_STEPS", 25)
-CROSS_ENCODER_EVAL_STEPS = get_env_int("LAWBOT_CROSS_ENCODER_EVAL_STEPS", 50)
+CROSS_ENCODER_WARMUP_STEPS = get_env_int(
+    "LAWBOT_CROSS_ENCODER_WARMUP_STEPS", 100
+)  # Increased for better LR scheduling
+CROSS_ENCODER_EVAL_STEPS = get_env_int(
+    "LAWBOT_CROSS_ENCODER_EVAL_STEPS", 100
+)  # Increased for better monitoring
 CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int(
     "LAWBOT_CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS", 4
 )
 CROSS_ENCODER_DATALOADER_NUM_WORKERS = get_env_int(
-    "LAWBOT_CROSS_ENCODER_DATALOADER_NUM_WORKERS", 1
-)
+    "LAWBOT_CROSS_ENCODER_DATALOADER_NUM_WORKERS", 4
+)  # Increased for better data loading
 
 # === THEM CAC THAM SO MOI ===
 # Early stopping parameters
@@ -267,14 +282,59 @@ EVAL_TEST_SIZE = get_env_float("LAWBOT_EVAL_TEST_SIZE", 0.15)
 TOP_K_LIGHT_RERANKING = get_env_int("LAWBOT_TOP_K_LIGHT_RERANKING", 50)
 LIGHT_RERANKING_WEIGHT = get_env_float("LAWBOT_LIGHT_RERANKING_WEIGHT", 0.7)
 RETRIEVAL_SCORE_WEIGHT = get_env_float("LAWBOT_RETRIEVAL_SCORE_WEIGHT", 0.3)
-MINILM_L6_BATCH_SIZE = get_env_int("LAWBOT_MINILM_L6_BATCH_SIZE", 16)
-MINILM_L6_MAX_LENGTH = get_env_int("LAWBOT_MINILM_L6_MAX_LENGTH", 256)
+LIGHT_RERANKER_BATCH_SIZE = get_env_int("LAWBOT_LIGHT_RERANKER_BATCH_SIZE", 16)
+LIGHT_RERANKER_MAX_LENGTH = get_env_int("LAWBOT_LIGHT_RERANKER_MAX_LENGTH", 256)
+CROSS_ENCODER_MAX_LENGTH = get_env_int("LAWBOT_CROSS_ENCODER_MAX_LENGTH", 512)
 
 # --- Tham so Toi Uu Hieu Suat ---
 MAX_SEQUENCE_LENGTH = get_env_int("LAWBOT_MAX_SEQUENCE_LENGTH", 256)
 GRADIENT_CLIP_NORM = get_env_float("LAWBOT_GRADIENT_CLIP_NORM", 1.0)
 FP16_TRAINING = get_env_bool("LAWBOT_FP16_TRAINING", True)
 WARMUP_RATIO = get_env_float("LAWBOT_WARMUP_RATIO", 0.1)
+
+# --- DataLoader Optimization Parameters ---
+BI_ENCODER_DATALOADER_NUM_WORKERS = get_env_int(
+    "LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS", 4
+)
+BI_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool(
+    "LAWBOT_BI_ENCODER_DATALOADER_PIN_MEMORY", True
+)
+BI_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int(
+    "LAWBOT_BI_ENCODER_DATALOADER_PREFETCH_FACTOR", 2
+)
+CROSS_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool(
+    "LAWBOT_CROSS_ENCODER_DATALOADER_PIN_MEMORY", True
+)
+CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int(
+    "LAWBOT_CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR", 2
+)
+
+# ============================================================================
+# HARD NEGATIVE SAMPLING PARAMETERS
+# ============================================================================
+
+# Hard negative sampling parameters (moved from magic numbers)
+HARD_NEGATIVE_TOP_K = get_env_int("LAWBOT_HARD_NEGATIVE_TOP_K", 200)
+HARD_NEGATIVE_POSITIONS = (2, 10)  # Vị trí để lấy hard negative
+HARD_NEGATIVES_PER_POSITIVE = get_env_int("LAWBOT_HARD_NEGATIVES_PER_POSITIVE", 3)
+
+# Negative sampling parameters
+NEGATIVE_SAMPLES_PER_POSITIVE = get_env_int("LAWBOT_NEGATIVE_SAMPLES_PER_POSITIVE", 4)
+RANDOM_NEGATIVE_RATIO = get_env_float("LAWBOT_RANDOM_NEGATIVE_RATIO", 0.5)
+
+# ============================================================================
+# DATA PROCESSING PARAMETERS
+# ============================================================================
+
+# Text processing parameters
+MIN_TEXT_LENGTH = get_env_int("LAWBOT_MIN_TEXT_LENGTH", 20)
+MAX_TEXT_LENGTH = get_env_int("LAWBOT_MAX_TEXT_LENGTH", 1000)
+DAPT_MAX_LENGTH = get_env_int("LAWBOT_DAPT_MAX_LENGTH", 128)
+DAPT_DATASET_SIZE_LIMIT = get_env_int("LAWBOT_DAPT_DATASET_SIZE_LIMIT", 10000)
+
+# Data filtering parameters
+EMPTY_CONTENT_THRESHOLD = get_env_float("LAWBOT_EMPTY_CONTENT_THRESHOLD", 0.1)
+MIN_VALID_ARTICLES = get_env_int("LAWBOT_MIN_VALID_ARTICLES", 1000)
 
 # ============================================================================
 # VALIDATION FUNCTIONS

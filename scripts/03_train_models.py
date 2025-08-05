@@ -30,7 +30,11 @@ import sys
 
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.logging_utils import get_logger
+from core.logging_system import get_logger
+from core.utils import (
+    create_reranker_preprocess_function,
+    create_light_reranker_preprocess_function,
+)
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)
@@ -195,18 +199,29 @@ def train_bi_encoder_optimized():
     # Initialize model using config
     model = SentenceTransformer(config.BI_ENCODER_MODEL_NAME)
 
-    # Create data loader
-    train_dataloader = DataLoader(examples, shuffle=True, batch_size=16)
+    # Create data loader with optimized batch size and performance settings
+    train_dataloader = DataLoader(
+        examples,
+        shuffle=True,
+        batch_size=config.BI_ENCODER_BATCH_SIZE,
+        num_workers=config.BI_ENCODER_DATALOADER_NUM_WORKERS,  # Use config workers
+        pin_memory=config.BI_ENCODER_DATALOADER_PIN_MEMORY,  # Use config pin memory
+        prefetch_factor=config.BI_ENCODER_DATALOADER_PREFETCH_FACTOR,  # Use config prefetch
+    )
 
     # Setup loss function
     train_loss = losses.ContrastiveLoss(model)
 
-    # Train model
+    # Train model with optimized parameters
     model.fit(
         train_objectives=[(train_dataloader, train_loss)],
-        epochs=3,
-        warmup_steps=100,
+        epochs=config.BI_ENCODER_EPOCHS,  # Use config epochs (3)
+        warmup_steps=config.BI_ENCODER_WARMUP_STEPS,  # Use config warmup (100)
         show_progress_bar=True,
+        optimizer_params={"lr": config.BI_ENCODER_LR},  # Use config LR (2e-5)
+        scheduler="WarmupLinear",  # Use linear warmup scheduler
+        weight_decay=0.01,
+        evaluation_steps=config.BI_ENCODER_EVAL_STEPS,  # Use config eval steps (50)
     )
 
     # Save model
@@ -218,37 +233,73 @@ def train_bi_encoder_optimized():
 
 
 def build_faiss_index_optimized(model):
-    """Build FAISS index toi uu"""
+    """Build FAISS index toi uu (DA SUA LOI LOGIC PARSE DU LIEU)"""
     logger.info("[INDEX] Building FAISS index...")
 
-    # Load legal corpus
-    with open(config.LEGAL_CORPUS_PATH, "r", encoding="utf-8") as f:
-        legal_corpus = json.load(f)
+    try:
+        # Import utility function
+        from core.utils import parse_legal_corpus
 
-    # Create embeddings
-    documents = []
-    for item in legal_corpus:
-        if isinstance(item, dict) and "content_Article" in item:
-            documents.append(item["content_Article"])
-        elif isinstance(item, str):
-            documents.append(item)
+        # Parse legal corpus using common utility
+        all_articles = parse_legal_corpus(config.LEGAL_CORPUS_PATH)
 
-    logger.info(f"[INDEX] Creating embeddings for {len(documents)} documents...")
+        if not all_articles:
+            logger.error(
+                "[INDEX] No articles extracted from legal corpus. Please check the corpus structure."
+            )
+            return False
 
-    # Create embeddings
-    embeddings = model.encode(documents, show_progress_bar=True, batch_size=32)
+        # Extract documents and aids
+        documents = [article["content"] for article in all_articles]
+        aids = [article["aid"] for article in all_articles]
 
-    # Build FAISS index
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
-    index.add(embeddings.astype("float32"))
+        logger.info(f"[INDEX] Creating embeddings for {len(documents)} documents...")
 
-    # Save index
-    index_path = config.INDEXES_DIR / "faiss_index_optimized.bin"
-    faiss.write_index(index, str(index_path))
-    logger.info(f"[SAVE] FAISS index saved to: {index_path}")
+        # Create embeddings with optimized batch size and performance settings
+        embeddings = model.encode(
+            documents,
+            show_progress_bar=True,
+            batch_size=config.BI_ENCODER_BATCH_SIZE,
+            convert_to_numpy=True,
+            device=(
+                "cuda" if torch.cuda.is_available() else "cpu"
+            ),  # Use GPU if available
+            normalize_embeddings=True,  # Normalize embeddings for better performance
+        )
 
-    return index
+        if embeddings.size == 0:
+            logger.error("[INDEX] No embeddings generated. Cannot build index.")
+            return False
+
+        # Build FAISS index
+        dimension = embeddings.shape[1]
+        faiss.normalize_L2(embeddings)
+
+        # Use IndexFlatIP for simplicity and reliability
+        index = faiss.IndexFlatIP(dimension)
+        index.add(embeddings.astype("float32"))
+
+        # Save index
+        config.INDEXES_DIR.mkdir(parents=True, exist_ok=True)
+        faiss.write_index(index, str(config.FAISS_INDEX_PATH))
+
+        # Save index-to-aid mapping
+        with open(config.INDEX_TO_AID_PATH, "w", encoding="utf-8") as f:
+            json.dump(aids, f, ensure_ascii=False, indent=2)
+
+        logger.info(
+            f"[INDEX] FAISS index built successfully with {index.ntotal} vectors"
+        )
+        logger.info(f"[INDEX] Index saved to: {config.FAISS_INDEX_PATH}")
+        logger.info(
+            f"[INDEX] Index-to-AID mapping saved to: {config.INDEX_TO_AID_PATH}"
+        )
+
+        return True
+
+    except Exception as e:
+        logger.error(f"[INDEX] Error building FAISS index: {e}", exc_info=True)
+        return False
 
 
 def train_cross_encoder_optimized():
@@ -324,10 +375,24 @@ def train_cross_encoder_optimized():
     train_dataset = dataset.train_test_split(test_size=0.1)["train"]
     eval_dataset = dataset.train_test_split(test_size=0.1)["test"]
 
-    # Initialize model using config - Use PhoBERT-Law if available
-    if config.PHOBERT_LAW_PATH.exists():
-        logger.info("[MODEL] Using PhoBERT-Law model (domain-adapted)")
-        model_name = str(config.PHOBERT_LAW_PATH)
+    # Initialize model using config - Use PhoBERT-Law if available and contains model files
+    phobert_law_path = config.PHOBERT_LAW_PATH
+    if phobert_law_path.exists() and any(phobert_law_path.iterdir()):
+        # Check if the directory contains essential model files
+        required_files = ["config.json", "pytorch_model.bin", "vocab.txt"]
+        has_required_files = all(
+            (phobert_law_path / file).exists() for file in required_files
+        )
+
+        if has_required_files:
+            logger.info("[MODEL] Using PhoBERT-Law model (domain-adapted)")
+            model_name = str(phobert_law_path)
+        else:
+            logger.warning(
+                f"[MODEL] PhoBERT-Law directory exists but missing required files: {required_files}"
+            )
+            logger.info("[MODEL] Falling back to base PhoBERT model")
+            model_name = config.CROSS_ENCODER_MODEL_NAME
     else:
         logger.info("[MODEL] Using base PhoBERT model")
         model_name = config.CROSS_ENCODER_MODEL_NAME
@@ -335,119 +400,10 @@ def train_cross_encoder_optimized():
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=2)
 
-    def preprocess_function(examples):
-        """Preprocess function with robust error handling and optimized performance"""
-        try:
-            # Validate input structure
-            if not isinstance(examples, dict):
-                raise ValueError(f"Examples must be a dict, got {type(examples)}")
-
-            required_keys = ["text1", "text2", "label"]
-            for key in required_keys:
-                if key not in examples:
-                    raise ValueError(f"Missing required key: {key}")
-
-            # Ensure all inputs are lists of same length
-            text1_list = examples["text1"]
-            text2_list = examples["text2"]
-            label_list = examples["label"]
-
-            if not isinstance(text1_list, list) or not isinstance(text2_list, list):
-                raise ValueError("text1 and text2 must be lists")
-
-            if len(text1_list) != len(text2_list):
-                raise ValueError(
-                    f"Length mismatch: text1={len(text1_list)}, text2={len(text2_list)}"
-                )
-
-            # Process texts with validation and optimization
-            texts = []
-            valid_labels = []
-
-            for i, (text1, text2) in enumerate(zip(text1_list, text2_list)):
-                try:
-                    # Ensure texts are strings and not None
-                    text1_str = str(text1) if text1 is not None else ""
-                    text2_str = str(text2) if text2 is not None else ""
-
-                    # Skip empty texts
-                    if not text1_str.strip() or not text2_str.strip():
-                        logger.warning(f"[SKIP] Empty text at index {i}")
-                        continue
-
-                    # Combine texts efficiently
-                    combined_text = f"{text1_str} [SEP] {text2_str}"
-                    texts.append(combined_text)
-
-                    # Get corresponding label
-                    if i < len(label_list):
-                        valid_labels.append(label_list[i])
-                    else:
-                        logger.warning(f"[SKIP] Missing label at index {i}")
-                        continue
-
-                except Exception as e:
-                    logger.warning(f"[SKIP] Error processing text at index {i}: {e}")
-                    continue
-
-            if not texts:
-                raise ValueError("No valid texts after processing")
-
-            # OPTIMIZED TOKENIZATION: Use return_tensors=None for better compatibility
-            # and convert to tensors later if needed
-            try:
-                result = tokenizer(
-                    texts,
-                    padding="max_length",
-                    truncation=True,
-                    max_length=512,
-                    return_tensors=None,  # Changed from "pt" to None for better compatibility
-                )
-
-                # Convert to tensors manually for better control
-                import torch
-
-                for key in result:
-                    if isinstance(result[key], list):
-                        result[key] = torch.tensor(result[key])
-
-            except Exception as tokenizer_error:
-                logger.error(f"Tokenizer error: {tokenizer_error}")
-                # Fallback: try without return_tensors
-                result = tokenizer(
-                    texts,
-                    padding="max_length",
-                    truncation=True,
-                    max_length=512,
-                )
-
-                # Manual tensor conversion
-                import torch
-
-                for key in result:
-                    if isinstance(result[key], list):
-                        result[key] = torch.tensor(result[key])
-
-            # Add labels as tensor
-            if valid_labels:
-                import torch
-
-                result["labels"] = torch.tensor(valid_labels, dtype=torch.long)
-            else:
-                result["labels"] = torch.tensor([], dtype=torch.long)
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Error in preprocess_function: {e}")
-            logger.error(f"Examples structure: {type(examples)}")
-            if isinstance(examples, dict):
-                logger.error(f"Examples keys: {list(examples.keys())}")
-                for key, value in examples.items():
-                    logger.error(
-                        f"  {key}: {type(value)} (length: {len(value) if hasattr(value, '__len__') else 'N/A'})"
-                    )
-            raise
+    # Use factory function for preprocessing
+    preprocess_function = create_reranker_preprocess_function(
+        tokenizer, max_length=config.CROSS_ENCODER_MAX_LENGTH
+    )
 
     # Tokenize datasets with memory optimization
     logger.info("[TOKENIZE] Tokenizing training dataset...")
@@ -466,31 +422,43 @@ def train_cross_encoder_optimized():
         remove_columns=eval_dataset.column_names,  # Remove original columns to save memory
     )
 
-    # OPTIMIZED TRAINING ARGUMENTS with best practices
+    # OPTIMIZED TRAINING ARGUMENTS with config parameters
     training_args = TrainingArguments(
         output_dir=str(config.MODELS_DIR / "cross_encoder_optimized"),
-        num_train_epochs=3,
-        per_device_train_batch_size=4,  # Reduced for better memory management
-        per_device_eval_batch_size=4,  # Reduced for better memory management
-        gradient_accumulation_steps=2,  # Add gradient accumulation for effective larger batch
-        warmup_steps=100,
+        num_train_epochs=config.CROSS_ENCODER_EPOCHS,  # Use config epochs (5)
+        per_device_train_batch_size=config.CROSS_ENCODER_BATCH_SIZE,  # Use config batch size (8)
+        per_device_eval_batch_size=config.CROSS_ENCODER_BATCH_SIZE,  # Use config batch size (8)
+        gradient_accumulation_steps=config.CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS,  # Use config (4)
+        learning_rate=config.CROSS_ENCODER_LR,  # Use config LR (2e-5)
+        warmup_steps=config.CROSS_ENCODER_WARMUP_STEPS,  # Use config warmup (100)
         weight_decay=0.01,
         logging_dir=str(config.LOGS_DIR),
-        logging_steps=10,
+        logging_steps=25,  # More frequent logging for better monitoring
         eval_strategy="steps",
-        eval_steps=100,
-        save_steps=100,
+        eval_steps=config.CROSS_ENCODER_EVAL_STEPS,  # Use config eval steps (100)
+        save_steps=config.CROSS_ENCODER_EVAL_STEPS,  # Match eval steps
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
-        # MEMORY OPTIMIZATION
-        dataloader_pin_memory=False,  # Disable pin memory for CPU compatibility
-        dataloader_num_workers=0,  # Use single worker for better compatibility
+        greater_is_better=False,
         # PERFORMANCE OPTIMIZATION
-        fp16=False,  # Disable mixed precision for better compatibility
+        dataloader_pin_memory=config.CROSS_ENCODER_DATALOADER_PIN_MEMORY,  # Use config pin memory
+        dataloader_num_workers=config.CROSS_ENCODER_DATALOADER_NUM_WORKERS,  # Use config workers
+        dataloader_prefetch_factor=config.CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR,  # Use config prefetch
+        # MIXED PRECISION TRAINING (FP16) - ENABLED FOR BETTER PERFORMANCE
+        fp16=config.FP16_TRAINING
+        and torch.cuda.is_available(),  # Use config FP16 setting if GPU available
         # SAVE OPTIMIZATION
-        save_total_limit=2,  # Limit number of saved checkpoints
+        save_total_limit=3,  # Keep 3 best models
         # EVALUATION OPTIMIZATION
-        eval_accumulation_steps=1,  # Evaluate in smaller batches
+        eval_accumulation_steps=2,  # Evaluate in smaller batches
+        # LEARNING RATE SCHEDULER
+        lr_scheduler_type="linear",  # Linear learning rate decay
+        # ADDITIONAL OPTIMIZATIONS
+        remove_unused_columns=True,  # Remove unused columns to save memory
+        report_to=None,  # Disable wandb/tensorboard
+        dataloader_drop_last=True,  # Drop incomplete batches
+        dataloader_prefetch_factor=2,  # Prefetch data
+        optim="adamw_torch",  # Use PyTorch optimizer for speed
     )
 
     # Initialize trainer with memory optimization
@@ -618,15 +586,17 @@ class OptimizedPipelineEvaluator:
         return per_query_results
 
 
-def train_minilm_l6_optimized():
-    """Train MiniLM-L6 model for cascaded reranking (fast, small Cross-Encoder)"""
-    logger.info("[MINILM-L6] Starting MiniLM-L6 training for cascaded reranking...")
+def train_light_reranker_optimized():
+    """Train Light Reranker model for cascaded reranking (fast, small Cross-Encoder)"""
+    logger.info(
+        "[LIGHT-RERANKER] Starting Light Reranker training for cascaded reranking..."
+    )
 
     try:
         # Load training data
         bi_encoder_data, cross_encoder_data = load_prepared_training_data()
         if cross_encoder_data is None:
-            logger.error("[MINILM-L6] Failed to load training data")
+            logger.error("[LIGHT-RERANKER] Failed to load training data")
             return None
 
         # Convert to Dataset format
@@ -640,11 +610,11 @@ def train_minilm_l6_optimized():
                     }
                 )
             except Exception as e:
-                logger.warning(f"[MINILM-L6] Error processing item: {e}")
+                logger.warning(f"[LIGHT-RERANKER] Error processing item: {e}")
                 continue
 
         if not train_pairs:
-            logger.error("[MINILM-L6] No valid training pairs found")
+            logger.error("[LIGHT-RERANKER] No valid training pairs found")
             return None
 
         train_dataset = Dataset.from_list(train_pairs)
@@ -654,12 +624,12 @@ def train_minilm_l6_optimized():
         train_dataset = dataset_dict["train"]
         eval_dataset = dataset_dict["test"]
 
-        logger.info(f"[MINILM-L6] Training dataset size: {len(train_dataset)}")
-        logger.info(f"[MINILM-L6] Evaluation dataset size: {len(eval_dataset)}")
+        logger.info(f"[LIGHT-RERANKER] Training dataset size: {len(train_dataset)}")
+        logger.info(f"[LIGHT-RERANKER] Evaluation dataset size: {len(eval_dataset)}")
 
         # Initialize tokenizer and model
-        model_name = config.MINILM_L6_MODEL_NAME
-        logger.info(f"[MINILM-L6] Loading model: {model_name}")
+        model_name = config.LIGHT_RERANKER_MODEL_NAME
+        logger.info(f"[LIGHT-RERANKER] Loading model: {model_name}")
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForSequenceClassification.from_pretrained(
@@ -670,62 +640,31 @@ def train_minilm_l6_optimized():
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Preprocessing function for MiniLM-L6
-        def preprocess_function_minilm(examples):
-            """Preprocess function optimized for MiniLM-L6"""
-            try:
-                texts = []
-                for i in range(len(examples["texts"])):
-                    question = examples["texts"][i][0]
-                    answer = examples["texts"][i][1]
-                    texts.append(f"{question} [SEP] {answer}")
-
-                # Tokenize with error handling
-                result = tokenizer(
-                    texts,
-                    padding="max_length",
-                    truncation=True,
-                    max_length=256,  # MiniLM-L6 uses shorter sequences
-                    return_tensors=None,  # Avoid tuple index error
-                )
-
-                # Manual tensor conversion
-                result = {k: torch.tensor(v) for k, v in result.items()}
-
-                # Add labels
-                result["labels"] = torch.tensor(examples["label"])
-
-                return result
-
-            except Exception as e:
-                logger.error(f"[MINILM-L6] Preprocessing error: {e}")
-                # Fallback: return empty tensors
-                return {
-                    "input_ids": torch.tensor([]),
-                    "attention_mask": torch.tensor([]),
-                    "labels": torch.tensor([]),
-                }
+        # Use factory function for preprocessing Light Reranker
+        preprocess_function_light_reranker = create_light_reranker_preprocess_function(
+            tokenizer, max_length=config.LIGHT_RERANKER_MAX_LENGTH
+        )
 
         # Apply preprocessing
-        logger.info("[MINILM-L6] Preprocessing training data...")
+        logger.info("[LIGHT-RERANKER] Preprocessing training data...")
         train_dataset = train_dataset.map(
-            preprocess_function_minilm,
+            preprocess_function_light_reranker,
             batched=True,
             batch_size=1000,
             remove_columns=train_dataset.column_names,
         )
 
-        logger.info("[MINILM-L6] Preprocessing evaluation data...")
+        logger.info("[LIGHT-RERANKER] Preprocessing evaluation data...")
         eval_dataset = eval_dataset.map(
-            preprocess_function_minilm,
+            preprocess_function_light_reranker,
             batched=True,
             batch_size=1000,
             remove_columns=eval_dataset.column_names,
         )
 
-        # Training arguments optimized for MiniLM-L6
+        # Training arguments optimized for Light Reranker
         training_args = TrainingArguments(
-            output_dir=str(config.MINILM_L6_PATH),
+            output_dir=str(config.LIGHT_RERANKER_PATH),
             overwrite_output_dir=True,
             num_train_epochs=2,  # Shorter training for fast model
             per_device_train_batch_size=8,  # Larger batch size for smaller model
@@ -734,7 +673,7 @@ def train_minilm_l6_optimized():
             learning_rate=2e-5,  # Slightly higher learning rate
             warmup_steps=50,
             weight_decay=0.01,
-            logging_dir=str(config.MINILM_L6_PATH / "logs"),
+            logging_dir=str(config.LIGHT_RERANKER_PATH / "logs"),
             logging_steps=100,
             eval_strategy="steps",
             eval_steps=200,
@@ -744,9 +683,9 @@ def train_minilm_l6_optimized():
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
-            fp16=torch.cuda.is_available(),
-            dataloader_pin_memory=False,
-            dataloader_num_workers=0,
+            fp16=config.FP16_TRAINING and torch.cuda.is_available(),
+            dataloader_pin_memory=config.CROSS_ENCODER_DATALOADER_PIN_MEMORY,  # Use config pin memory
+            dataloader_num_workers=config.CROSS_ENCODER_DATALOADER_NUM_WORKERS,  # Use config workers
             remove_unused_columns=False,
             report_to=None,
         )
@@ -762,21 +701,23 @@ def train_minilm_l6_optimized():
         )
 
         # Train model
-        logger.info("[MINILM-L6] Starting training...")
+        logger.info("[LIGHT-RERANKER] Starting training...")
         try:
             trainer.train()
         except Exception as e:
-            logger.error(f"[MINILM-L6] Training error: {e}")
+            logger.error(f"[LIGHT-RERANKER] Training error: {e}")
             return None
 
         # Save model
-        logger.info("[MINILM-L6] Saving model...")
+        logger.info("[LIGHT-RERANKER] Saving model...")
         try:
             trainer.save_model()
-            tokenizer.save_pretrained(config.MINILM_L6_PATH)
-            logger.info(f"[MINILM-L6] Model saved to: {config.MINILM_L6_PATH}")
+            tokenizer.save_pretrained(config.LIGHT_RERANKER_PATH)
+            logger.info(
+                f"[LIGHT-RERANKER] Model saved to: {config.LIGHT_RERANKER_PATH}"
+            )
         except Exception as e:
-            logger.error(f"[MINILM-L6] Error saving model: {e}")
+            logger.error(f"[LIGHT-RERANKER] Error saving model: {e}")
             return None
 
         # Clean up
@@ -784,42 +725,61 @@ def train_minilm_l6_optimized():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        logger.info("[MINILM-L6] MiniLM-L6 training completed successfully!")
+        logger.info("[LIGHT-RERANKER] Light Reranker training completed successfully!")
         return True
 
     except Exception as e:
-        logger.error(f"[MINILM-L6] Error during MiniLM-L6 training: {e}")
+        logger.error(f"[LIGHT-RERANKER] Error during Light Reranker training: {e}")
         return None
 
 
 def run_complete_training_pipeline():
-    """Chay pipeline hoan chinh: Model Training + Index Building + Evaluation"""
+    """Chay pipeline hoan chinh: Model Training + Index Building + Evaluation (DA SUA LOI)"""
     logger.info("=" * 60)
     logger.info("MODEL TRAINING & EVALUATION PIPELINE")
     logger.info("=" * 60)
 
     try:
+        # Pre-validation: Check legal corpus structure
+        logger.info("PRE-VALIDATION: Checking legal corpus structure...")
+        from core.utils import validate_legal_corpus_structure
+
+        if not validate_legal_corpus_structure(config.LEGAL_CORPUS_PATH):
+            logger.error("Legal corpus structure validation failed")
+            return False
+
         # Step 1: Train Bi-Encoder
         logger.info("STEP 1: Training Bi-Encoder...")
         bi_encoder_model = train_bi_encoder_optimized()
         if bi_encoder_model is None:
+            logger.error("Bi-Encoder training failed")
             return False
 
         # Step 2: Build FAISS index
         logger.info("STEP 2: Building FAISS index...")
-        build_faiss_index_optimized(bi_encoder_model)
+        index_success = build_faiss_index_optimized(bi_encoder_model)
+        if not index_success:
+            logger.error("FAISS index building failed")
+            return False
 
         # Step 3: Train Cross-Encoder
         logger.info("STEP 3: Training Cross-Encoder...")
-        train_cross_encoder_optimized()
+        cross_encoder_success = train_cross_encoder_optimized()
+        if not cross_encoder_success:
+            logger.error("Cross-Encoder training failed")
+            return False
 
-        # Step 4: Train MiniLM-L6 for Cascaded Reranking
-        logger.info("STEP 4: Training MiniLM-L6 for cascaded reranking...")
-        train_minilm_l6_optimized()
+        # Step 4: Train Light Reranker for Cascaded Reranking
+        logger.info("STEP 4: Training Light Reranker for cascaded reranking...")
+        light_reranker_success = train_light_reranker_optimized()
+        if not light_reranker_success:
+            logger.warning("Light Reranker training failed, but continuing...")
 
         # Step 5: Run evaluation
         logger.info("STEP 5: Running evaluation...")
-        run_evaluation_optimized()
+        eval_success = run_evaluation_optimized()
+        if not eval_success:
+            logger.warning("Evaluation failed, but pipeline completed")
 
         logger.info("=" * 60)
         logger.info("PIPELINE COMPLETED SUCCESSFULLY!")
@@ -832,7 +792,7 @@ def run_complete_training_pipeline():
         return True
 
     except Exception as e:
-        logger.error(f"Error during pipeline: {e}")
+        logger.error(f"Error during pipeline: {e}", exc_info=True)
         return False
 
 

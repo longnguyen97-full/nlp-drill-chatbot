@@ -31,7 +31,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import config
-from core.logging_utils import get_logger
+from core.logging_system import get_logger
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)
@@ -139,8 +139,13 @@ def train_temporary_bi_encoder(triplets, aid_map):
 
 
 def find_hard_negatives(
-    temp_model, train_data, aid_map, top_k=200, hard_negative_positions=(2, 10)
+    temp_model, train_data, aid_map, top_k=None, hard_negative_positions=None
 ):
+    # Use config parameters if not provided
+    if top_k is None:
+        top_k = config.HARD_NEGATIVE_TOP_K
+    if hard_negative_positions is None:
+        hard_negative_positions = config.HARD_NEGATIVE_POSITIONS
     """Tim hard negatives su dung model tam thoi"""
     logger.info("[HARD_NEG] Finding hard negatives using temporary model...")
 
@@ -193,7 +198,9 @@ def find_hard_negatives(
             if positive_aid in aid_map:
                 positive_content = aid_map[positive_aid]
 
-                for hard_neg_aid in hard_neg_aids[:3]:  # Lay toi da 3 hard negatives
+                for hard_neg_aid in hard_neg_aids[
+                    : config.HARD_NEGATIVES_PER_POSITIVE
+                ]:  # Use config parameter
                     if hard_neg_aid in aid_map:
                         hard_negative_content = aid_map[hard_neg_aid]
 

@@ -9,7 +9,7 @@ import logging
 from typing import List
 
 import config
-from core.logging_utils import get_logger
+from core.logging_system import get_logger
 
 # Get logger for this module
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ class LegalQAPipeline:
         """
         Khoi tao pipeline bang cach load tat ca cac thanh phan can thiet.
         Support ensemble reranking voi nhieu Cross-Encoder models.
-        Support cascaded reranking voi MiniLM-L6 (fast) + Ensemble (strong).
+        Support cascaded reranking voi Light Reranker (fast) + Ensemble (strong).
         """
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {self.device}")
@@ -38,9 +38,9 @@ class LegalQAPipeline:
             with open(config.INDEX_TO_AID_PATH, "r", encoding="utf-8") as f:
                 self.index_to_aid = json.load(f)
 
-            # Tang 2: Light Re-ranking (MiniLM-L6) - for cascaded reranking
+            # Tang 2: Light Re-ranking (Light Reranker) - for cascaded reranking
             if self.use_cascaded_reranking:
-                self._load_minilm_l6_model()
+                self._load_light_reranker_model()
 
             # Tang 3: Strong Re-ranking (Ensemble)
             self.cross_encoders = []
@@ -108,31 +108,33 @@ class LegalQAPipeline:
             logger.warning(f"[ENSEMBLE] Could not load XLM-RoBERTa model: {e}")
             logger.info("[ENSEMBLE] Using single Cross-Encoder model")
 
-    def _load_minilm_l6_model(self):
-        """Load MiniLM-L6 model for light reranking in cascaded pipeline"""
-        logger.info("[CASCADED] Loading MiniLM-L6 model for light reranking...")
+    def _load_light_reranker_model(self):
+        """Load Light Reranker model for light reranking in cascaded pipeline"""
+        logger.info("[CASCADED] Loading Light Reranker model for light reranking...")
 
         try:
-            if config.MINILM_L6_PATH.exists():
-                logger.info("[CASCADED] Loading trained MiniLM-L6 model...")
-                model_path = str(config.MINILM_L6_PATH)
+            if config.LIGHT_RERANKER_PATH.exists():
+                logger.info("[CASCADED] Loading trained Light Reranker model...")
+                model_path = str(config.LIGHT_RERANKER_PATH)
             else:
-                logger.info("[CASCADED] Loading pre-trained MiniLM-L6 model...")
-                model_path = config.MINILM_L6_MODEL_NAME
+                logger.info("[CASCADED] Loading pre-trained Light Reranker model...")
+                model_path = config.LIGHT_RERANKER_MODEL_NAME
 
-            self.minilm_tokenizer = AutoTokenizer.from_pretrained(model_path)
-            self.minilm_model = AutoModelForSequenceClassification.from_pretrained(
-                model_path, num_labels=2
-            ).to(self.device)
-            self.minilm_model.eval()
+            self.light_reranker_tokenizer = AutoTokenizer.from_pretrained(model_path)
+            self.light_reranker_model = (
+                AutoModelForSequenceClassification.from_pretrained(
+                    model_path, num_labels=2
+                ).to(self.device)
+            )
+            self.light_reranker_model.eval()
 
-            logger.info("[CASCADED] MiniLM-L6 model loaded successfully!")
+            logger.info("[CASCADED] Light Reranker model loaded successfully!")
 
         except Exception as e:
-            logger.warning(f"[CASCADED] Could not load MiniLM-L6 model: {e}")
+            logger.warning(f"[CASCADED] Could not load Light Reranker model: {e}")
             logger.info("[CASCADED] Cascaded reranking will use only strong models")
-            self.minilm_model = None
-            self.minilm_tokenizer = None
+            self.light_reranker_model = None
+            self.light_reranker_tokenizer = None
 
     def _load_single_model(self):
         """Load single Cross-Encoder model"""
@@ -353,20 +355,20 @@ class LegalQAPipeline:
         top_k_light: int = 50,
     ):
         """
-        Tang 2: Light Re-ranking voi MiniLM-L6 (fast, small Cross-Encoder)
+        Tang 2: Light Re-ranking voi Light Reranker (fast, small Cross-Encoder)
         Loc xuong top_k_light ung vien chat luong nhat tu 500 xuong 50.
         """
-        if not self.is_ready or self.minilm_model is None:
+        if not self.is_ready or self.light_reranker_model is None:
             logger.warning(
-                "[CASCADED] MiniLM-L6 not available, skipping light reranking"
+                "[CASCADED] Light Reranker not available, skipping light reranking"
             )
             return retrieved_aids[:top_k_light], retrieved_distances[:top_k_light]
 
         logger.debug(
-            f"[CASCADED] Tang 2: Light reranking {len(retrieved_aids)} candidates to {top_k_light} with MiniLM-L6..."
+            f"[CASCADED] Tang 2: Light reranking {len(retrieved_aids)} candidates to {top_k_light} with Light Reranker..."
         )
 
-        # Prepare inputs for MiniLM-L6
+        # Prepare inputs for Light Reranker
         cross_encoder_inputs = []
         aid_to_index = {}
 
@@ -379,21 +381,21 @@ class LegalQAPipeline:
         if not cross_encoder_inputs:
             return retrieved_aids[:top_k_light], retrieved_distances[:top_k_light]
 
-        # Score with MiniLM-L6
+        # Score with Light Reranker
         light_scores = []
-        batch_size = config.MINILM_L6_BATCH_SIZE  # Use config parameter
+        batch_size = config.LIGHT_RERANKER_BATCH_SIZE  # Use config parameter
 
         with torch.no_grad():
             for i in range(0, len(cross_encoder_inputs), batch_size):
                 batch_inputs = cross_encoder_inputs[i : i + batch_size]
 
                 try:
-                    # Tokenize with MiniLM-L6
-                    tokenized = self.minilm_tokenizer(
+                    # Tokenize with Light Reranker
+                    tokenized = self.light_reranker_tokenizer(
                         batch_inputs,
                         padding=True,
                         truncation=True,
-                        max_length=config.MINILM_L6_MAX_LENGTH,  # Use config parameter
+                        max_length=config.LIGHT_RERANKER_MAX_LENGTH,  # Use config parameter
                         return_tensors=None,  # Avoid tuple index error
                     )
 
@@ -406,7 +408,7 @@ class LegalQAPipeline:
                     tokenized = {k: v.to(self.device) for k, v in tokenized.items()}
 
                     # Get scores
-                    logits = self.minilm_model(**tokenized).logits
+                    logits = self.light_reranker_model(**tokenized).logits
                     scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
                     light_scores.extend(scores)
 
@@ -591,7 +593,7 @@ class LegalQAPipeline:
         """
         Thuc hien quy trinh Cascaded Reranking: 3 tang de tim cau tra loi.
         Tang 1: Bi-Encoder retrieval (500 candidates)
-        Tang 2: MiniLM-L6 light reranking (50 candidates)
+        Tang 2: Light Reranker light reranking (50 candidates)
         Tang 3: Ensemble strong reranking (5 final results)
         """
         # Tang 1: Retrieval
@@ -607,7 +609,7 @@ class LegalQAPipeline:
         ]
 
         # Tang 2: Light Reranking (nếu có Cascaded Reranking)
-        if self.use_cascaded_reranking and self.minilm_model is not None:
+        if self.use_cascaded_reranking and self.light_reranker_model is not None:
             logger.info(
                 f"[CASCADED] Tang 2: Light reranking {len(retrieved_aids)} -> {config.TOP_K_LIGHT_RERANKING} candidates"
             )

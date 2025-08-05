@@ -23,7 +23,7 @@ from typing import Dict, List, Tuple
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import config
-from core.logging_utils import get_logger
+from core.logging_system import get_logger
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)

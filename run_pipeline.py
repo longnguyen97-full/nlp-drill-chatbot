@@ -21,8 +21,8 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 # Import progress utilities
-from core.progress_utils import ProgressTracker, StepLogger, create_summary_report
-from core.logging_utils import (
+from core.progress_tracker import ProgressTracker, StepLogger, create_summary_report
+from core.logging_system import (
     setup_unified_logging,
     log_step_start,
     log_step_end,
@@ -102,7 +102,7 @@ class LegalQAPipeline:
                     "id": "03",
                     "name": "Model Training & Evaluation Pipeline",
                     "script": "03_train_models.py",
-                    "description": "Bi-Encoder training + FAISS index + Cross-Encoder training + MiniLM-L6 training + Evaluation",
+                    "description": "Bi-Encoder training + FAISS index + Cross-Encoder training + Light Reranker training + Evaluation",
                     "required": True,
                     "estimated_time": "120-200 phut",
                 }

@@ -54,7 +54,7 @@ class BatchEvaluator:
         Returns:
             Dictionary of average metrics
         """
-        from core import MetricsCalculator
+        from core.utils.evaluation import precision_at_k, recall_at_k, f1_at_k
 
         metrics = {}
         for k in self.k_values:
@@ -68,15 +68,9 @@ class BatchEvaluator:
                 if not retrieved_aids:
                     continue
 
-                precision = MetricsCalculator.precision_at_k(
-                    list(ground_truth), retrieved_aids[:k], k
-                )
-                recall = MetricsCalculator.recall_at_k(
-                    list(ground_truth), retrieved_aids[:k], k
-                )
-                f1 = MetricsCalculator.f1_at_k(
-                    list(ground_truth), retrieved_aids[:k], k
-                )
+                precision = precision_at_k(list(ground_truth), retrieved_aids[:k], k)
+                recall = recall_at_k(list(ground_truth), retrieved_aids[:k], k)
+                f1 = f1_at_k(list(ground_truth), retrieved_aids[:k], k)
 
                 precision_values.append(precision)
                 recall_values.append(recall)

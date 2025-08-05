@@ -1,34 +1,15 @@
 """
-Core Module - Toi Uu Hoan Toan
-==================================
+Core Module - LawBot v8.0
+==========================
 
-Import tat ca utilities can thiet tu core.py
+Main entry point for the core module. All utilities are now organized in the utils package.
 """
 
-from .core import (
-    # Data Processing
-    DataLoader,
-    DataSaver,
-    DataSplitter,
-    # Training Utilities
-    NegativeSampler,
-    DataAugmenter,
-    # Evaluation Utilities
-    MetricsCalculator,
-    # Utility Functions
-    create_directories,
-    setup_script_paths,
-    load_config,
-)
+# Import all utilities from the utils package for backward compatibility
+from .utils import *
 
+# Re-export all utilities for clean imports
 __all__ = [
-    "DataLoader",
-    "DataSaver",
-    "DataSplitter",
-    "NegativeSampler",
-    "DataAugmenter",
-    "MetricsCalculator",
-    "create_directories",
-    "setup_script_paths",
-    "load_config",
+    # Re-export everything from utils
+    *__import__("core.utils", fromlist=["*"]).__all__
 ]

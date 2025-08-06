@@ -30,10 +30,11 @@ import numpy as np
 import sys
 import os
 
-# Force CPU training to avoid CUDA issues
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["TORCH_USE_CUDA_DSA"] = "1"
+# GPU/CPU configuration - Allow GPU training if available
+# Comment out CPU forcing to allow GPU training
+# os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+# os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -42,6 +43,16 @@ from core.logging_system import get_logger
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)
+
+# Check GPU availability
+GPU_AVAILABLE = torch.cuda.is_available()
+if GPU_AVAILABLE:
+    logger.info(f"GPU detected: {torch.cuda.get_device_name(0)}")
+    logger.info(
+        f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
+    )
+else:
+    logger.info("No GPU detected, will use CPU training")
 
 
 def load_legal_corpus():
@@ -122,11 +133,24 @@ def create_dapt_dataset(
         f"[DATASET] Filtered {len(filtered_texts)} valid texts from {len(legal_texts)} total"
     )
 
+    # Optimize dataset size based on GPU memory
+    optimal_dataset_size = config.DAPT_DATASET_SIZE_LIMIT
+    if GPU_AVAILABLE:
+        gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        if gpu_memory_gb >= 8:  # 8GB+ GPU
+            optimal_dataset_size = min(20000, config.DAPT_DATASET_SIZE_LIMIT * 2)
+        elif gpu_memory_gb >= 4:  # 4-8GB GPU
+            optimal_dataset_size = config.DAPT_DATASET_SIZE_LIMIT
+        else:  # <4GB GPU
+            optimal_dataset_size = max(5000, config.DAPT_DATASET_SIZE_LIMIT // 2)
+
     # Limit dataset size for faster training
-    if len(filtered_texts) > config.DAPT_DATASET_SIZE_LIMIT:  # Use config parameter
-        filtered_texts = filtered_texts[: config.DAPT_DATASET_SIZE_LIMIT]
+    if len(filtered_texts) > optimal_dataset_size:
+        filtered_texts = filtered_texts[:optimal_dataset_size]
         logger.info(
-            f"[DATASET] Limited to {config.DAPT_DATASET_SIZE_LIMIT} samples for faster training"
+            f"[DATASET] Limited to {optimal_dataset_size} samples for optimal training (GPU memory: {gpu_memory_gb:.1f}GB)"
+            if GPU_AVAILABLE
+            else f"[DATASET] Limited to {optimal_dataset_size} samples for CPU training"
         )
 
     def tokenize_function(examples):
@@ -158,14 +182,18 @@ def create_dapt_dataset(
     dataset_dict = {"text": filtered_texts}
     dataset = Dataset.from_dict(dataset_dict)
 
+    # Optimize tokenization based on device
+    optimal_batch_size = 500 if GPU_AVAILABLE else 100  # Smaller batch for CPU
+    optimal_num_proc = 4 if GPU_AVAILABLE else 1  # Single process for CPU
+
     # Tokenize dataset with error handling - OPTIMIZED BATCH SIZE
     try:
         tokenized_dataset = dataset.map(
             tokenize_function,
             batched=True,
-            batch_size=500,  # Increased batch size for speed
+            batch_size=optimal_batch_size,  # Optimized batch size
             remove_columns=dataset.column_names,
-            num_proc=4,  # Use multiple processes
+            num_proc=optimal_num_proc,  # Optimized number of processes
         )
 
         # Filter out samples with all zeros (failed tokenization) - OPTIMIZED
@@ -206,6 +234,28 @@ def train_phobert_law(legal_texts, output_path):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForMaskedLM.from_pretrained(model_name)
 
+        # Optimize batch size based on GPU memory
+        optimal_batch_size = config.BI_ENCODER_BATCH_SIZE
+        if GPU_AVAILABLE:
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            if gpu_memory_gb >= 8:  # 8GB+ GPU
+                optimal_batch_size = min(32, config.BI_ENCODER_BATCH_SIZE * 2)
+                logger.info(
+                    f"[DAPT] High memory GPU detected ({gpu_memory_gb:.1f}GB), using batch size: {optimal_batch_size}"
+                )
+            elif gpu_memory_gb >= 4:  # 4-8GB GPU
+                optimal_batch_size = config.BI_ENCODER_BATCH_SIZE
+                logger.info(
+                    f"[DAPT] Medium memory GPU detected ({gpu_memory_gb:.1f}GB), using batch size: {optimal_batch_size}"
+                )
+            else:  # <4GB GPU
+                optimal_batch_size = max(4, config.BI_ENCODER_BATCH_SIZE // 2)
+                logger.info(
+                    f"[DAPT] Low memory GPU detected ({gpu_memory_gb:.1f}GB), using batch size: {optimal_batch_size}"
+                )
+        else:
+            logger.info(f"[DAPT] CPU training, using batch size: {optimal_batch_size}")
+
         # Add padding token if not present
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -223,13 +273,13 @@ def train_phobert_law(legal_texts, output_path):
             tokenizer=tokenizer, mlm=True, mlm_probability=0.15  # Mask 15% of tokens
         )
 
-        # Training arguments - OPTIMIZED FOR BETTER PERFORMANCE
+        # Training arguments - OPTIMIZED FOR GPU/CPU PERFORMANCE
         training_args = TrainingArguments(
             output_dir=str(output_path),
             overwrite_output_dir=True,
             num_train_epochs=config.BI_ENCODER_EPOCHS,  # Use config epochs (3)
-            per_device_train_batch_size=config.BI_ENCODER_BATCH_SIZE,  # Use config batch size (16)
-            per_device_eval_batch_size=config.BI_ENCODER_BATCH_SIZE,  # Use config batch size (16)
+            per_device_train_batch_size=optimal_batch_size,  # Use optimized batch size
+            per_device_eval_batch_size=optimal_batch_size,  # Use optimized batch size
             gradient_accumulation_steps=config.BI_ENCODER_GRADIENT_ACCUMULATION_STEPS,  # Use config (2)
             learning_rate=config.BI_ENCODER_LR,  # Use config LR (2e-5)
             warmup_steps=config.BI_ENCODER_WARMUP_STEPS,  # Use config warmup (100)
@@ -244,19 +294,23 @@ def train_phobert_law(legal_texts, output_path):
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
-            fp16=config.FP16_TRAINING
-            and torch.cuda.is_available(),  # Use config FP16 setting if GPU available
+            # GPU/CPU OPTIMIZATION
+            fp16=config.FP16_TRAINING and GPU_AVAILABLE,  # Use FP16 if GPU available
+            use_cpu=not GPU_AVAILABLE,  # Use CPU only if no GPU
             # PERFORMANCE OPTIMIZATIONS
             dataloader_pin_memory=config.CROSS_ENCODER_DATALOADER_PIN_MEMORY,  # Use config pin memory
-            dataloader_num_workers=config.CROSS_ENCODER_DATALOADER_NUM_WORKERS,  # Use config workers
-            dataloader_prefetch_factor=config.CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR,  # Use config prefetch
+            dataloader_num_workers=(
+                0 if not GPU_AVAILABLE else config.CROSS_ENCODER_DATALOADER_NUM_WORKERS
+            ),  # Use 0 workers on CPU
+            dataloader_prefetch_factor=(
+                None
+                if not GPU_AVAILABLE
+                else config.CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR
+            ),  # Set to None on CPU
             remove_unused_columns=True,  # Remove unused columns to save memory
             report_to=None,  # Disable wandb/tensorboard
-            # CPU OPTIMIZATION
-            use_cpu=True,  # Force CPU training
             dataloader_drop_last=True,  # Drop incomplete batches
             # ADDITIONAL PERFORMANCE OPTIMIZATIONS
-            dataloader_prefetch_factor=2,  # Prefetch data
             gradient_checkpointing=False,  # Disable for speed
             optim="adamw_torch",  # Use PyTorch optimizer for speed
             # LEARNING RATE SCHEDULER
@@ -272,8 +326,14 @@ def train_phobert_law(legal_texts, output_path):
             data_collator=data_collator,
         )
 
-        # Train model with CPU (no CUDA)
-        logger.info("[DAPT] Starting CPU training...")
+        # Train model with GPU/CPU
+        device_info = "GPU" if GPU_AVAILABLE else "CPU"
+        logger.info(f"[DAPT] Starting {device_info} training...")
+        if GPU_AVAILABLE:
+            logger.info(f"[DAPT] Using GPU: {torch.cuda.get_device_name(0)}")
+            logger.info(f"[DAPT] Mixed precision (FP16): {config.FP16_TRAINING}")
+        else:
+            logger.info("[DAPT] Using CPU training (slower but compatible)")
         trainer.train()
 
         # Save model and tokenizer
@@ -285,8 +345,9 @@ def train_phobert_law(legal_texts, output_path):
 
         # Clean up memory
         del trainer, train_dataset, eval_dataset, model
-        if torch.cuda.is_available():
+        if GPU_AVAILABLE:
             torch.cuda.empty_cache()
+            logger.info("[DAPT] GPU memory cleared")
 
         return True
 
@@ -295,8 +356,9 @@ def train_phobert_law(legal_texts, output_path):
         # Clean up memory even on error
         if "trainer" in locals():
             del trainer
-        if torch.cuda.is_available():
+        if GPU_AVAILABLE:
             torch.cuda.empty_cache()
+            logger.info("[DAPT] GPU memory cleared after error")
         return False
 
 
@@ -380,6 +442,16 @@ def run_dapt_pipeline():
         logger.info("=" * 60)
         logger.info("DAPT PIPELINE COMPLETED SUCCESSFULLY!")
         logger.info("=" * 60)
+        logger.info("PERFORMANCE SUMMARY:")
+        device_used = "GPU" if GPU_AVAILABLE else "CPU"
+        logger.info(f"- Training device: {device_used}")
+        if GPU_AVAILABLE:
+            logger.info(f"- GPU model: {torch.cuda.get_device_name(0)}")
+            logger.info(
+                f"- GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
+            )
+            logger.info(f"- Mixed precision: {config.FP16_TRAINING}")
+        logger.info("=" * 60)
         logger.info("PhoBERT-Law model ready for use in:")
         logger.info("1. Bi-Encoder training")
         logger.info("2. Cross-Encoder training")
@@ -395,11 +467,26 @@ def main():
     """Ham chinh"""
     logger.info("[START] Bat dau Domain-Adaptive Pre-training Pipeline...")
 
+    # Log device information
+    device_info = "GPU" if GPU_AVAILABLE else "CPU"
+    logger.info(f"[DEVICE] Training will use: {device_info}")
+    if GPU_AVAILABLE:
+        logger.info(f"[DEVICE] GPU: {torch.cuda.get_device_name(0)}")
+        logger.info(
+            f"[DEVICE] Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
+        )
+
     success = run_dapt_pipeline()
 
     if success:
         logger.info("✅ DAPT Pipeline completed successfully!")
         logger.info("✅ PhoBERT-Law model ready for legal tasks!")
+        if GPU_AVAILABLE:
+            logger.info("🚀 GPU acceleration enabled for maximum performance!")
+        else:
+            logger.info(
+                "🐌 CPU training completed (consider using GPU for faster training)"
+            )
     else:
         logger.error("❌ DAPT Pipeline failed!")
         sys.exit(1)

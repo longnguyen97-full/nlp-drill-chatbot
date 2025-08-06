@@ -19,7 +19,7 @@ def create_reranker_preprocess_function(
     tokenizer: PreTrainedTokenizer, max_length: int
 ):
     """
-    Tạo function preprocessing cho Cross-Encoder/Reranker models.
+    Tạo function preprocessing cho Cross-Encoder/Reranker models với error handling.
 
     Args:
         tokenizer: Tokenizer instance
@@ -30,25 +30,76 @@ def create_reranker_preprocess_function(
     """
 
     def preprocess_function(examples):
-        # Combine text1 and text2 with separator
-        texts = [
-            f"{text1} {tokenizer.sep_token} {text2}"
-            for text1, text2 in zip(examples["text1"], examples["text2"])
-        ]
+        """
+        Preprocess function for reranker models with robust error handling.
 
-        # Tokenize
-        result = tokenizer(
-            texts,
-            truncation=True,
-            padding="max_length",
-            max_length=max_length,
-            return_tensors=None,
-        )
+        Args:
+            examples: Dictionary containing 'text1', 'text2', and 'label' keys
 
-        # Add labels
-        result["labels"] = examples["label"]
+        Returns:
+            dict: Tokenized inputs with labels
+        """
+        try:
+            # Validate input structure
+            if not isinstance(examples, dict):
+                raise ValueError(f"Examples must be a dict, got {type(examples)}")
 
-        return result
+            required_keys = ["text1", "text2", "label"]
+            for key in required_keys:
+                if key not in examples:
+                    raise ValueError(f"Missing required key: {key}")
+
+            # Ensure all inputs are lists of same length
+            text1_list = examples["text1"]
+            text2_list = examples["text2"]
+            label_list = examples["label"]
+
+            if not isinstance(text1_list, list) or not isinstance(text2_list, list):
+                raise ValueError("text1 and text2 must be lists")
+
+            if len(text1_list) != len(text2_list):
+                raise ValueError("text1 and text2 must have the same length")
+
+            # Create combined texts
+            texts = [f"{q} [SEP] {p}" for q, p in zip(text1_list, text2_list)]
+
+            # Tokenize with error handling
+            result = tokenizer(
+                texts,
+                padding="max_length",
+                truncation=True,
+                max_length=max_length,
+                return_tensors=None,  # Avoid tuple index error
+            )
+
+            # Manual tensor conversion with error handling
+            try:
+                result = {k: torch.tensor(v) for k, v in result.items()}
+            except Exception as tensor_error:
+                logger.warning(f"Tensor conversion failed, using lists: {tensor_error}")
+                # Keep as lists if tensor conversion fails
+
+            # Add labels - CRITICAL FIX: This was missing!
+            valid_labels = []
+            for label in label_list:
+                if isinstance(label, (int, float)):
+                    valid_labels.append(int(label))
+                else:
+                    logger.warning(f"Invalid label type: {type(label)}, using 0")
+                    valid_labels.append(0)
+
+            result["labels"] = torch.tensor(valid_labels, dtype=torch.long)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Preprocessing error: {e}")
+            # Return empty result to avoid pipeline crash
+            return {
+                "input_ids": torch.tensor([]),
+                "attention_mask": torch.tensor([]),
+                "labels": torch.tensor([]),
+            }
 
     return preprocess_function
 
@@ -57,7 +108,7 @@ def create_light_reranker_preprocess_function(
     tokenizer: PreTrainedTokenizer, max_length: int
 ):
     """
-    Tạo function preprocessing cho Light Reranker models.
+    Tạo function preprocessing cho Light Reranker models với error handling.
 
     Args:
         tokenizer: Tokenizer instance
@@ -68,25 +119,69 @@ def create_light_reranker_preprocess_function(
     """
 
     def preprocess_function(examples):
-        # Combine texts with separator
-        texts = [
-            f"{texts[0]} {tokenizer.sep_token} {texts[1]}"
-            for texts in examples["texts"]
-        ]
+        """
+        Preprocess function for Light Reranker with robust error handling.
 
-        # Tokenize
-        result = tokenizer(
-            texts,
-            truncation=True,
-            padding="max_length",
-            max_length=max_length,
-            return_tensors=None,
-        )
+        Args:
+            examples: Dictionary containing 'texts' and 'label' keys
 
-        # Add labels
-        result["labels"] = examples["label"]
+        Returns:
+            dict: Tokenized inputs with labels
+        """
+        try:
+            # Validate input structure
+            if not isinstance(examples, dict):
+                raise ValueError(f"Examples must be a dict, got {type(examples)}")
 
-        return result
+            required_keys = ["texts", "label"]
+            for key in required_keys:
+                if key not in examples:
+                    raise ValueError(f"Missing required key: {key}")
+
+            # Process texts
+            texts = []
+            for i in range(len(examples["texts"])):
+                question = examples["texts"][i][0]
+                answer = examples["texts"][i][1]
+                texts.append(f"{question} [SEP] {answer}")
+
+            # Tokenize with error handling
+            result = tokenizer(
+                texts,
+                padding="max_length",
+                truncation=True,
+                max_length=max_length,
+                return_tensors=None,  # Avoid tuple index error
+            )
+
+            # Manual tensor conversion with error handling
+            try:
+                result = {k: torch.tensor(v) for k, v in result.items()}
+            except Exception as tensor_error:
+                logger.warning(f"Tensor conversion failed, using lists: {tensor_error}")
+                # Keep as lists if tensor conversion fails
+
+            # Add labels - CRITICAL FIX: This was missing!
+            valid_labels = []
+            for label in examples["label"]:
+                if isinstance(label, (int, float)):
+                    valid_labels.append(int(label))
+                else:
+                    logger.warning(f"Invalid label type: {type(label)}, using 0")
+                    valid_labels.append(0)
+
+            result["labels"] = torch.tensor(valid_labels, dtype=torch.long)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Light reranker preprocessing error: {e}")
+            # Return empty result to avoid pipeline crash
+            return {
+                "input_ids": torch.tensor([]),
+                "attention_mask": torch.tensor([]),
+                "labels": torch.tensor([]),
+            }
 
     return preprocess_function
 

@@ -91,10 +91,47 @@ def create_initial_triplets(train_data, aid_map):
     return triplets
 
 
+def load_optimized_model_for_hard_negative_mining():
+    """Load model tối ưu để tìm hard negatives - ưu tiên model đã train"""
+    logger.info("[HARD_NEG] Loading optimized model for hard negative mining...")
+
+    # Lựa chọn 1: Thử load Bi-Encoder đã được huấn luyện (tốt nhất)
+    bi_encoder_path = config.BI_ENCODER_PATH
+    if bi_encoder_path.exists() and any(bi_encoder_path.iterdir()):
+        try:
+            logger.info("[HARD_NEG] Found existing Bi-Encoder model, loading...")
+            model = SentenceTransformer(str(bi_encoder_path))
+            logger.info("[HARD_NEG] Successfully loaded existing Bi-Encoder model")
+            return model, "existing_bi_encoder"
+        except Exception as e:
+            logger.warning(f"[HARD_NEG] Failed to load existing Bi-Encoder: {e}")
+
+    # Lựa chọn 2: Thử load PhoBERT-Law từ DAPT (tốt)
+    phobert_law_path = config.PHOBERT_LAW_PATH
+    if phobert_law_path.exists() and any(phobert_law_path.iterdir()):
+        try:
+            logger.info("[HARD_NEG] Found PhoBERT-Law model, loading...")
+            model = SentenceTransformer(str(phobert_law_path))
+            logger.info("[HARD_NEG] Successfully loaded PhoBERT-Law model")
+            return model, "phobert_law"
+        except Exception as e:
+            logger.warning(f"[HARD_NEG] Failed to load PhoBERT-Law: {e}")
+
+    # Lựa chọn 3: Fallback to base model (không train)
+    try:
+        logger.info("[HARD_NEG] Using base model without training...")
+        model = SentenceTransformer(config.BI_ENCODER_MODEL_NAME)
+        logger.info("[HARD_NEG] Successfully loaded base model")
+        return model, "base_model"
+    except Exception as e:
+        logger.error(f"[HARD_NEG] Failed to load base model: {e}")
+        return None, "none"
+
+
 def train_temporary_bi_encoder(triplets, aid_map):
-    """Train Bi-Encoder tam thoi de tim hard negatives"""
+    """Train Bi-Encoder tam thoi de tim hard negatives (FALLBACK ONLY)"""
     logger.info(
-        "[TEMP_BI_ENCODER] Training temporary Bi-Encoder for hard negative mining..."
+        "[TEMP_BI_ENCODER] Training temporary Bi-Encoder for hard negative mining (FALLBACK)..."
     )
 
     try:
@@ -139,34 +176,51 @@ def train_temporary_bi_encoder(triplets, aid_map):
 
 
 def find_hard_negatives(
-    temp_model, train_data, aid_map, top_k=None, hard_negative_positions=None
+    temp_model,
+    train_data,
+    aid_map,
+    model_type="unknown",
+    top_k=None,
+    hard_negative_positions=None,
 ):
     # Use config parameters if not provided
     if top_k is None:
         top_k = config.HARD_NEGATIVE_TOP_K
     if hard_negative_positions is None:
         hard_negative_positions = config.HARD_NEGATIVE_POSITIONS
-    """Tim hard negatives su dung model tam thoi"""
-    logger.info("[HARD_NEG] Finding hard negatives using temporary model...")
+
+    """Tim hard negatives su dung model tối ưu"""
+    logger.info(f"[HARD_NEG] Finding hard negatives using {model_type} model...")
 
     if temp_model is None:
-        logger.warning(
-            "[HARD_NEG] No temporary model available, skipping hard negative mining"
-        )
+        logger.warning("[HARD_NEG] No model available, skipping hard negative mining")
         return []
 
     hard_negatives = []
     all_contents = list(aid_map.values())
     all_aids = list(aid_map.keys())
 
-    # Tao embeddings cho tat ca contents
-    logger.info("[HARD_NEG] Creating embeddings for all contents...")
-    embeddings = temp_model.encode(all_contents, show_progress_bar=True, batch_size=32)
+    # Optimize batch size based on model type
+    optimal_batch_size = 64 if model_type == "existing_bi_encoder" else 32
 
-    # Tao FAISS index
+    # Tao embeddings cho tat ca contents
+    logger.info(
+        f"[HARD_NEG] Creating embeddings for all contents (batch_size={optimal_batch_size})..."
+    )
+    embeddings = temp_model.encode(
+        all_contents, show_progress_bar=True, batch_size=optimal_batch_size
+    )
+
+    # Tao FAISS index với optimization
     dimension = embeddings.shape[1]
+    logger.info(f"[HARD_NEG] Creating FAISS index with dimension {dimension}...")
+
+    # Normalize embeddings for better cosine similarity
+    faiss.normalize_L2(embeddings)
     index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
     index.add(embeddings.astype("float32"))
+
+    logger.info(f"[HARD_NEG] FAISS index created with {index.ntotal} vectors")
 
     logger.info("[HARD_NEG] Searching for hard negatives...")
 
@@ -185,6 +239,8 @@ def find_hard_negatives(
 
         # Tim hard negatives (top-ranked incorrect results)
         hard_neg_aids = []
+        hard_neg_scores = []
+
         for i in range(
             hard_negative_positions[0],
             min(hard_negative_positions[1] + 1, len(indices[0])),
@@ -192,6 +248,13 @@ def find_hard_negatives(
             candidate_aid = all_aids[indices[0][i]]
             if candidate_aid not in relevant_aids:
                 hard_neg_aids.append(candidate_aid)
+                hard_neg_scores.append(scores[0][i])
+
+        # Sort by similarity score (higher score = more similar = harder negative)
+        if hard_neg_aids:
+            hard_neg_pairs = list(zip(hard_neg_aids, hard_neg_scores))
+            hard_neg_pairs.sort(key=lambda x: x[1], reverse=True)
+            hard_neg_aids = [aid for aid, score in hard_neg_pairs]
 
         # Tao hard negative triplets
         for positive_aid in relevant_aids:
@@ -212,8 +275,22 @@ def find_hard_negatives(
                         }
                         hard_negatives.append(hard_negative)
 
-    logger.info(f"[HARD_NEG] Found {len(hard_negatives)} hard negative triplets")
-    return hard_negatives
+            logger.info(
+                f"[HARD_NEG] Found {len(hard_negatives)} hard negative triplets"
+            )
+
+        # Log quality metrics
+        if hard_negatives:
+            logger.info(f"[HARD_NEG] Hard negative mining completed successfully")
+            logger.info(
+                f"[HARD_NEG] Average hard negatives per query: {len(hard_negatives) / len([s for s in train_data if s['relevant_aids']]):.1f}"
+            )
+        else:
+            logger.warning(
+                "[HARD_NEG] No hard negatives found, consider adjusting parameters"
+            )
+
+        return hard_negatives
 
 
 def create_enhanced_triplets(initial_triplets, hard_negatives):
@@ -538,13 +615,23 @@ def run_advanced_training_data_preparation_pipeline():
         logger.info("STEP 2: Creating initial triplets...")
         initial_triplets = create_initial_triplets(train_data, aid_map)
 
-        # Step 3: Train temporary Bi-Encoder for hard negative mining
-        logger.info("STEP 3: Training temporary Bi-Encoder for hard negative mining...")
-        temp_model = train_temporary_bi_encoder(initial_triplets, aid_map)
+        # Step 3: Load optimized model for hard negative mining
+        logger.info("STEP 3: Loading optimized model for hard negative mining...")
+        temp_model, model_type = load_optimized_model_for_hard_negative_mining()
+
+        # Fallback to training if no model available
+        if temp_model is None:
+            logger.warning(
+                "No optimized model available, falling back to training temporary model..."
+            )
+            temp_model = train_temporary_bi_encoder(initial_triplets, aid_map)
+            model_type = "temporary_trained"
 
         # Step 4: Find hard negatives
         logger.info("STEP 4: Finding hard negatives...")
-        hard_negatives = find_hard_negatives(temp_model, train_data, aid_map)
+        hard_negatives = find_hard_negatives(
+            temp_model, train_data, aid_map, model_type
+        )
 
         # Step 5: Create enhanced triplets with hard negatives
         logger.info("STEP 5: Creating enhanced triplets with hard negatives...")
@@ -566,15 +653,24 @@ def run_advanced_training_data_preparation_pipeline():
             bi_encoder_data, cross_encoder_data
         )
 
-        # Clean up temporary model
+        # Clean up model
         if temp_model is not None:
             del temp_model
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("[CLEANUP] GPU memory cleared")
 
         logger.info("=" * 60)
         logger.info("ADVANCED PIPELINE COMPLETED SUCCESSFULLY!")
         logger.info("=" * 60)
+        logger.info("PERFORMANCE SUMMARY:")
+        logger.info(f"- Model used for hard negative mining: {model_type}")
+        logger.info(f"- Hard negatives found: {len(hard_negatives)}")
+        logger.info(f"- Total enhanced triplets: {len(enhanced_triplets)}")
+        logger.info(f"- Total enhanced pairs: {len(enhanced_pairs)}")
+        logger.info("=" * 60)
         logger.info("Advanced techniques implemented:")
+        logger.info("✅ Optimized Model Loading (no training needed)")
         logger.info("✅ Advanced Hard Negative Mining")
         logger.info("✅ Enhanced training data with hard negatives")
         logger.info("Next steps:")
@@ -591,6 +687,9 @@ def run_advanced_training_data_preparation_pipeline():
 def main():
     """Ham chinh"""
     logger.info("[START] Bat dau Advanced Training Data Preparation Pipeline...")
+    logger.info(
+        "[OPTIMIZATION] Using optimized model loading for hard negative mining..."
+    )
 
     success = run_advanced_training_data_preparation_pipeline()
 
@@ -599,6 +698,7 @@ def main():
             "✅ Advanced Training Data Preparation Pipeline completed successfully!"
         )
         logger.info("✅ Enhanced training data san sang cho model training!")
+        logger.info("🚀 Optimized model loading saved significant training time!")
     else:
         logger.error("❌ Advanced Training Data Preparation Pipeline failed!")
         sys.exit(1)

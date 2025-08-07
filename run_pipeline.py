@@ -58,7 +58,7 @@ class LegalQAPipeline:
         self.logger.info(f"[START] Bat dau Legal QA Pipeline - Log file: {log_file}")
 
     def _define_maximum_optimized_pipeline_steps(self) -> List[Dict]:
-        """Dinh nghia 4 buoc chinh toi uu cuc dai cho v7.0 (Cascaded Reranking)"""
+        """Dinh nghia 4 buoc chinh toi uu cuc dai cho v8.0 (Integrated Optimized Training)"""
         steps = []
 
         # Bước 0: DAPT (tùy chọn)
@@ -68,20 +68,20 @@ class LegalQAPipeline:
                     "id": "00",
                     "name": "Domain-Adaptive Pre-training (DAPT) - PhoBERT-Law",
                     "script": "00_adapt_model.py",
-                    "description": "Chuyen môn hóa PhoBERT thành PhoBERT-Law cho pháp luật",
+                    "description": "Chuyen môn hóa PhoBERT thành PhoBERT-Law cho pháp luật với tối ưu hóa cao cấp",
                     "required": False,  # Optional but recommended
                     "estimated_time": "60-120 phut",
                 }
             )
 
-        # Các bước bắt buộc
+        # Các bước bắt buộc - Tối ưu hóa tích hợp
         steps.extend(
             [
                 {
                     "id": "01",
-                    "name": "Environment & Data Processing Pipeline",
+                    "name": "Environment & Data Processing & Readiness Check Pipeline",
                     "script": "01_check_environment.py",
-                    "description": "Environment check + Data validation + Processing + Splitting + Mapping validation",
+                    "description": "Comprehensive environment check + Configuration validation + Model status check + Data validation + Processing + Splitting + Mapping validation với tối ưu hóa",
                     "required": True,
                     "estimated_time": "15-20 phut",
                 },
@@ -89,24 +89,20 @@ class LegalQAPipeline:
                     "id": "02",
                     "name": "Training Data Preparation Pipeline",
                     "script": "02_prepare_training_data.py",
-                    "description": "Hard Negative Mining + Create triplets/pairs + Merge data + Augmentation + Save training files",
+                    "description": "Advanced Hard Negative Mining + Create triplets/pairs + Merge data + Augmentation + Save training files",
                     "required": True,
                     "estimated_time": "10-15 phut",
                 },
-            ]
-        )
-
-        if not self.skip_filtering:
-            steps.append(
                 {
                     "id": "03",
-                    "name": "Model Training & Evaluation Pipeline",
+                    "name": "Integrated Model Training & Comprehensive Evaluation Pipeline",
                     "script": "03_train_models.py",
-                    "description": "Bi-Encoder training + FAISS index + Cross-Encoder training + Light Reranker training + Evaluation",
+                    "description": "Optimized Bi-Encoder training + FAISS index + Cross-Encoder training + Light Reranker training + Comprehensive Evaluation với đầy đủ metrics",
                     "required": True,
                     "estimated_time": "120-200 phut",
-                }
-            )
+                },
+            ]
+        )
 
         return steps
 
@@ -226,7 +222,7 @@ class LegalQAPipeline:
     def run_pipeline(self, start_step: Optional[str] = None) -> bool:
         """Chay toan bo pipeline hoac tu buoc cu the voi logging chi tiet"""
         self.logger.info(
-            "[TARGET] LEGAL QA PIPELINE - LUONG TOI UU CAN BANG (BALANCED OPTIMIZED V6.2)"
+            "[TARGET] LEGAL QA PIPELINE - LUONG TOI UU TICH HOP (INTEGRATED OPTIMIZED V8.0)"
         )
         self.logger.info("=" * 80)
 
@@ -310,9 +306,9 @@ class LegalQAPipeline:
         self.logger.info(
             f"[STATS] Thong ke: Thanh cong {successful_steps}, That bai {failed_steps}, Bo qua {skipped_steps}"
         )
-        self.logger.info("[WIN] He thong Legal QA v7.0 da san sang su dung!")
+        self.logger.info("[WIN] He thong Legal QA v8.0 da san sang su dung!")
         self.logger.info(
-            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Cascaded Reranking) va logic ro rang!"
+            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Integrated Optimized Training) va evaluation toan dien!"
         )
 
         # Tao bao cao tong ket
@@ -334,7 +330,7 @@ class LegalQAPipeline:
     def show_steps(self):
         """Hien thi danh sach cac buoc voi thong tin chi tiet"""
         self.logger.info(
-            "[LIST] DANH SACH CAC BUOC PIPELINE (CASCADED RERANKING V7.0):"
+            "[LIST] DANH SACH CAC BUOC PIPELINE (INTEGRATED OPTIMIZED TRAINING V8.0):"
         )
         self.logger.info("=" * 80)
 
@@ -351,14 +347,14 @@ class LegalQAPipeline:
 
         self.logger.info("[REQUIRED] = Bat buoc | [OPTIONAL] = Tuy chon")
         self.logger.info(
-            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Cascaded Reranking), logic ro rang, va best practices"
+            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Integrated Optimized Training), evaluation toan dien, va best practices"
         )
 
 
 def main():
     """Ham chinh"""
     parser = argparse.ArgumentParser(
-        description="[START] Legal QA Pipeline v7.0 - Cascaded Reranking (State-of-the-Art)",
+        description="[START] Legal QA Pipeline v8.0 - Integrated Optimized Training (State-of-the-Art)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Vi du su dung:

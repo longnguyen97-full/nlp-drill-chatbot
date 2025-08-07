@@ -176,7 +176,7 @@ BI_ENCODER_PATH = Path(
     get_env_var("LAWBOT_BI_ENCODER_PATH", str(MODELS_DIR / "bi-encoder"))
 )
 CROSS_ENCODER_PATH = Path(
-    get_env_var("LAWBOT_CROSS_ENCODER_PATH", str(MODELS_DIR / "cross-encoder-v2"))
+    get_env_var("LAWBOT_CROSS_ENCODER_PATH", str(MODELS_DIR / "cross-encoder"))
 )
 FAISS_INDEX_PATH = Path(
     get_env_var("LAWBOT_FAISS_INDEX_PATH", str(INDEXES_DIR / "legal.faiss"))
@@ -212,41 +212,58 @@ LIGHT_RERANKER_MODEL_NAME = get_env_var(
 
 # === TOI UU HOA DE KHAC PHUC OVERFITTING ===
 
-# --- Bi-Encoder Hyperparameters (OPTIMIZED FOR BETTER PERFORMANCE) ---
+# --- Bi-Encoder Hyperparameters (HIGHLY OPTIMIZED FOR MAXIMUM PERFORMANCE) ---
 BI_ENCODER_BATCH_SIZE = get_env_int(
-    "LAWBOT_BI_ENCODER_BATCH_SIZE", 16
-)  # Increased from 4
-BI_ENCODER_EPOCHS = get_env_int("LAWBOT_BI_ENCODER_EPOCHS", 3)  # Increased from 1
-BI_ENCODER_LR = get_env_float("LAWBOT_BI_ENCODER_LR", 2e-5)  # Increased from 1e-7
-BI_ENCODER_WARMUP_STEPS = get_env_int(
-    "LAWBOT_BI_ENCODER_WARMUP_STEPS", 100
-)  # Increased for better LR scheduling
+    "LAWBOT_BI_ENCODER_BATCH_SIZE", 32
+)  # Increased for better gradient estimates
+BI_ENCODER_EPOCHS = get_env_int(
+    "LAWBOT_BI_ENCODER_EPOCHS", 5
+)  # Increased for better learning
+BI_ENCODER_LR = get_env_float("LAWBOT_BI_ENCODER_LR", 2e-5)  # Optimized learning rate
+BI_ENCODER_WARMUP_RATIO = get_env_float(
+    "LAWBOT_BI_ENCODER_WARMUP_RATIO", 0.1
+)  # Use ratio for better scheduling
 BI_ENCODER_EVAL_STEPS = get_env_int(
-    "LAWBOT_BI_ENCODER_EVAL_STEPS", 50
-)  # Increased for better monitoring
+    "LAWBOT_BI_ENCODER_EVAL_STEPS", 100
+)  # Regular evaluation
 BI_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int(
     "LAWBOT_BI_ENCODER_GRADIENT_ACCUMULATION_STEPS", 2
-)  # Added for effective batch size control
+)  # Optimized for effective batch size
+BI_ENCODER_DATALOADER_NUM_WORKERS = get_env_int(
+    "LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS", 4
+)  # Better data loading
 
-# --- Cross-Encoder Hyperparameters (OPTIMIZED FOR BETTER PERFORMANCE) ---
+# --- Cross-Encoder Hyperparameters (HIGHLY OPTIMIZED FOR MAXIMUM PERFORMANCE) ---
 CROSS_ENCODER_BATCH_SIZE = get_env_int(
-    "LAWBOT_CROSS_ENCODER_BATCH_SIZE", 8
-)  # Increased from 4
-CROSS_ENCODER_EPOCHS = get_env_int("LAWBOT_CROSS_ENCODER_EPOCHS", 5)  # Increased from 1
-CROSS_ENCODER_LR = get_env_float("LAWBOT_CROSS_ENCODER_LR", 2e-5)  # Increased from 5e-6
-CROSS_ENCODER_MAX_LENGTH = get_env_int("LAWBOT_CROSS_ENCODER_MAX_LENGTH", 256)
-CROSS_ENCODER_WARMUP_STEPS = get_env_int(
-    "LAWBOT_CROSS_ENCODER_WARMUP_STEPS", 100
-)  # Increased for better LR scheduling
+    "LAWBOT_CROSS_ENCODER_BATCH_SIZE", 16
+)  # Increased for better gradient estimates
+CROSS_ENCODER_EPOCHS = get_env_int(
+    "LAWBOT_CROSS_ENCODER_EPOCHS", 8
+)  # Increased for better learning
+CROSS_ENCODER_LR = get_env_float(
+    "LAWBOT_CROSS_ENCODER_LR", 2e-5
+)  # Optimized learning rate
+CROSS_ENCODER_MAX_LENGTH = get_env_int(
+    "LAWBOT_CROSS_ENCODER_MAX_LENGTH", 512
+)  # Increased for better context
+CROSS_ENCODER_WARMUP_RATIO = get_env_float(
+    "LAWBOT_CROSS_ENCODER_WARMUP_RATIO", 0.1
+)  # Use ratio for better scheduling
 CROSS_ENCODER_EVAL_STEPS = get_env_int(
     "LAWBOT_CROSS_ENCODER_EVAL_STEPS", 100
-)  # Increased for better monitoring
+)  # Regular evaluation
 CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int(
-    "LAWBOT_CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS", 4
-)
+    "LAWBOT_CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS", 2
+)  # Optimized for effective batch size
 CROSS_ENCODER_DATALOADER_NUM_WORKERS = get_env_int(
     "LAWBOT_CROSS_ENCODER_DATALOADER_NUM_WORKERS", 4
-)  # Increased for better data loading
+)  # Better data loading
+CROSS_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool(
+    "LAWBOT_CROSS_ENCODER_DATALOADER_PIN_MEMORY", True
+)  # Memory optimization
+CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int(
+    "LAWBOT_CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR", 2
+)  # Data prefetching
 
 # === THEM CAC THAM SO MOI ===
 # Early stopping parameters

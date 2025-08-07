@@ -273,48 +273,52 @@ def train_phobert_law(legal_texts, output_path):
             tokenizer=tokenizer, mlm=True, mlm_probability=0.15  # Mask 15% of tokens
         )
 
-        # Training arguments - OPTIMIZED FOR GPU/CPU PERFORMANCE
+        # Training arguments - HIGHLY OPTIMIZED FOR MAXIMUM PERFORMANCE
         training_args = TrainingArguments(
             output_dir=str(output_path),
             overwrite_output_dir=True,
-            num_train_epochs=config.BI_ENCODER_EPOCHS,  # Use config epochs (3)
-            per_device_train_batch_size=optimal_batch_size,  # Use optimized batch size
-            per_device_eval_batch_size=optimal_batch_size,  # Use optimized batch size
-            gradient_accumulation_steps=config.BI_ENCODER_GRADIENT_ACCUMULATION_STEPS,  # Use config (2)
-            learning_rate=config.BI_ENCODER_LR,  # Use config LR (2e-5)
-            warmup_steps=config.BI_ENCODER_WARMUP_STEPS,  # Use config warmup (100)
+            num_train_epochs=5,  # Increased for better domain adaptation
+            per_device_train_batch_size=optimal_batch_size,
+            per_device_eval_batch_size=optimal_batch_size,
+            gradient_accumulation_steps=2,  # Optimized for effective batch size
+            learning_rate=2e-5,  # Optimized learning rate
+            warmup_ratio=0.1,  # Use ratio for better scheduling
             weight_decay=0.01,
             logging_dir=str(output_path / "logs"),
-            logging_steps=25,  # More frequent logging for better monitoring
+            logging_steps=25,
             eval_strategy="steps",
-            eval_steps=config.BI_ENCODER_EVAL_STEPS,  # Use config eval steps (50)
+            eval_steps=100,  # Regular evaluation
             save_strategy="steps",
-            save_steps=config.BI_ENCODER_EVAL_STEPS,  # Match eval steps
-            save_total_limit=2,  # Keep 2 best models
+            save_steps=200,  # Save every 200 steps
+            save_total_limit=3,  # Keep 3 best models
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
             # GPU/CPU OPTIMIZATION
-            fp16=config.FP16_TRAINING and GPU_AVAILABLE,  # Use FP16 if GPU available
-            use_cpu=not GPU_AVAILABLE,  # Use CPU only if no GPU
+            fp16=config.FP16_TRAINING and GPU_AVAILABLE,
+            use_cpu=not GPU_AVAILABLE,
             # PERFORMANCE OPTIMIZATIONS
-            dataloader_pin_memory=config.CROSS_ENCODER_DATALOADER_PIN_MEMORY,  # Use config pin memory
+            dataloader_pin_memory=config.CROSS_ENCODER_DATALOADER_PIN_MEMORY,
             dataloader_num_workers=(
                 0 if not GPU_AVAILABLE else config.CROSS_ENCODER_DATALOADER_NUM_WORKERS
-            ),  # Use 0 workers on CPU
+            ),
             dataloader_prefetch_factor=(
                 None
                 if not GPU_AVAILABLE
                 else config.CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR
-            ),  # Set to None on CPU
-            remove_unused_columns=True,  # Remove unused columns to save memory
-            report_to=None,  # Disable wandb/tensorboard
-            dataloader_drop_last=True,  # Drop incomplete batches
+            ),
+            remove_unused_columns=True,
+            report_to=None,
+            dataloader_drop_last=True,
             # ADDITIONAL PERFORMANCE OPTIMIZATIONS
-            gradient_checkpointing=False,  # Disable for speed
-            optim="adamw_torch",  # Use PyTorch optimizer for speed
-            # LEARNING RATE SCHEDULER
-            lr_scheduler_type="linear",  # Linear learning rate decay
+            gradient_checkpointing=False,
+            optim="adamw_torch",
+            lr_scheduler_type="linear",
+            # Early stopping for better generalization
+            early_stopping_patience=3,
+            early_stopping_threshold=0.001,
+            # Gradient clipping
+            max_grad_norm=1.0,
         )
 
         # Initialize trainer - Remove deprecated tokenizer parameter
@@ -406,9 +410,16 @@ def validate_phobert_law(model_path):
 
 def run_dapt_pipeline():
     """Chay DAPT pipeline"""
-    logger.info("=" * 60)
+    logger.info("=" * 80)
     logger.info("DOMAIN-ADAPTIVE PRE-TRAINING (DAPT) PIPELINE")
-    logger.info("=" * 60)
+    logger.info("=" * 80)
+    logger.info("Pipeline Overview:")
+    logger.info("   - Step 1: Load legal corpus")
+    logger.info("   - Step 2: Prepare legal texts for DAPT")
+    logger.info("   - Step 3: Create output directory")
+    logger.info("   - Step 4: Train PhoBERT-Law model")
+    logger.info("   - Step 5: Validate model")
+    logger.info("=" * 80)
 
     try:
         # Step 1: Load legal corpus
@@ -439,9 +450,9 @@ def run_dapt_pipeline():
         logger.info("STEP 5: Validating PhoBERT-Law...")
         validation_success = validate_phobert_law(phobert_law_path)
 
-        logger.info("=" * 60)
+        logger.info("=" * 80)
         logger.info("DAPT PIPELINE COMPLETED SUCCESSFULLY!")
-        logger.info("=" * 60)
+        logger.info("=" * 80)
         logger.info("PERFORMANCE SUMMARY:")
         device_used = "GPU" if GPU_AVAILABLE else "CPU"
         logger.info(f"- Training device: {device_used}")
@@ -451,7 +462,7 @@ def run_dapt_pipeline():
                 f"- GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
             )
             logger.info(f"- Mixed precision: {config.FP16_TRAINING}")
-        logger.info("=" * 60)
+        logger.info("=" * 80)
         logger.info("PhoBERT-Law model ready for use in:")
         logger.info("1. Bi-Encoder training")
         logger.info("2. Cross-Encoder training")
@@ -479,16 +490,16 @@ def main():
     success = run_dapt_pipeline()
 
     if success:
-        logger.info("✅ DAPT Pipeline completed successfully!")
-        logger.info("✅ PhoBERT-Law model ready for legal tasks!")
+        logger.info("DAPT Pipeline completed successfully!")
+        logger.info("PhoBERT-Law model ready for legal tasks!")
         if GPU_AVAILABLE:
-            logger.info("🚀 GPU acceleration enabled for maximum performance!")
+            logger.info("GPU acceleration enabled for maximum performance!")
         else:
             logger.info(
-                "🐌 CPU training completed (consider using GPU for faster training)"
+                "CPU training completed (consider using GPU for faster training)"
             )
     else:
-        logger.error("❌ DAPT Pipeline failed!")
+        logger.error("DAPT Pipeline failed!")
         sys.exit(1)
 
 

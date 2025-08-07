@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Training Data Preparation Pipeline - Advanced Optimization v7.0
-==============================================================
+Training Data Preparation Pipeline - Advanced Optimization v7.1 (Fixed)
+=======================================================================
 
 Script nay chuan bi training data cho Bi-Encoder va Cross-Encoder
 voi cac ky thuat toi uu nang cao:
-- Advanced Hard Negative Mining
+- Advanced Hard Negative Mining with robust model loading
 - AI-Powered Augmentation (Back-Translation & Query Generation)
 
 Tac gia: LawBot Team
-Phien ban: Advanced Optimization v7.0
+Phien ban: Advanced Optimization v7.1 (Fixed)
 """
 
 import json
@@ -27,6 +27,9 @@ import faiss
 # Them thu muc goc vao path
 import sys
 import os
+
+from transformers import AutoModel, AutoTokenizer
+from sentence_transformers.models import Pooling, WordEmbeddings
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -55,654 +58,356 @@ def load_processed_data():
     return train_data, aid_map
 
 
-def create_initial_triplets(train_data, aid_map):
-    """Tao triplets ban dau cho Bi-Encoder"""
+def create_initial_triplets(train_data: List[Dict], aid_map: Dict) -> List[Dict]:
+    """Tao triplets ban dau cho Bi-Encoder (easy negatives)."""
     logger.info("[TRIPLET] Creating initial triplets for Bi-Encoder...")
-
     triplets = []
     all_aids = list(aid_map.keys())
 
     for sample in train_data:
-        question = sample["question"]
-        relevant_aids = sample["relevant_aids"]
+        question = sample.get("question")
+        relevant_aids = sample.get("relevant_aids", [])
 
-        if not relevant_aids:
+        if not question or not relevant_aids:
             continue
 
-        # Tao positive examples
-        for positive_aid in relevant_aids:
-            if positive_aid in aid_map:
-                positive_content = aid_map[positive_aid]
+        positive_contents = [
+            aid_map.get(aid) for aid in relevant_aids if aid in aid_map
+        ]
+        negative_aids_pool = [aid for aid in all_aids if aid not in relevant_aids]
 
-                # Tao negative examples (random)
-                negative_aids = [aid for aid in all_aids if aid not in relevant_aids]
-                if negative_aids:
-                    negative_aid = random.choice(negative_aids)
-                    negative_content = aid_map[negative_aid]
+        if not positive_contents or not negative_aids_pool:
+            continue
 
-                    triplet = {
-                        "anchor": question,
-                        "positive": positive_content,
-                        "negative": negative_content,
-                    }
-                    triplets.append(triplet)
+        for positive_content in positive_contents:
+            negative_aid = random.choice(negative_aids_pool)
+            negative_content = aid_map[negative_aid]
+            triplets.append(
+                {
+                    "anchor": question,
+                    "positive": positive_content,
+                    "negative": negative_content,
+                }
+            )
 
-    logger.info(f"[TRIPLET] Created {len(triplets)} initial triplets")
+    logger.info(f"[TRIPLET] Created {len(triplets)} initial triplets.")
     return triplets
 
 
 def load_optimized_model_for_hard_negative_mining():
-    """Load model tối ưu để tìm hard negatives - ưu tiên model đã train"""
+    """
+    Load model tối ưu để tìm hard negatives.
+    Ưu tiên model đã được fine-tune, sau đó đến model DAPT, cuối cùng là model gốc.
+    Thực hiện sửa lỗi vocab_size một cách tường minh.
+    """
     logger.info("[HARD_NEG] Loading optimized model for hard negative mining...")
 
     # Lựa chọn 1: Thử load Bi-Encoder đã được huấn luyện (tốt nhất)
     bi_encoder_path = config.BI_ENCODER_PATH
     if bi_encoder_path.exists() and any(bi_encoder_path.iterdir()):
         try:
-            logger.info("[HARD_NEG] Found existing Bi-Encoder model, loading...")
+            logger.info(
+                f"[HARD_NEG] Found existing Bi-Encoder model at '{bi_encoder_path}', loading..."
+            )
             model = SentenceTransformer(str(bi_encoder_path))
-            logger.info("[HARD_NEG] Successfully loaded existing Bi-Encoder model")
+            logger.info("[HARD_NEG] Successfully loaded existing Bi-Encoder model.")
             return model, "existing_bi_encoder"
         except Exception as e:
-            logger.warning(f"[HARD_NEG] Failed to load existing Bi-Encoder: {e}")
+            logger.warning(
+                f"[HARD_NEG] Failed to load existing Bi-Encoder: {e}. Trying next option."
+            )
 
-    # Lựa chọn 2: Thử load PhoBERT-Law từ DAPT (tốt)
-    phobert_law_path = config.PHOBERT_LAW_PATH
-    if phobert_law_path.exists() and any(phobert_law_path.iterdir()):
+    # Lựa chọn 2: Thử load PhoBERT-Law từ DAPT (tốt) và sửa lỗi vocab size
+    phobert_law_path = str(config.PHOBERT_LAW_PATH)
+    if Path(phobert_law_path).exists() and any(Path(phobert_law_path).iterdir()):
         try:
-            logger.info("[HARD_NEG] Found PhoBERT-Law model, loading...")
-            model = SentenceTransformer(str(phobert_law_path))
-            logger.info("[HARD_NEG] Successfully loaded PhoBERT-Law model")
-            return model, "phobert_law"
-        except Exception as e:
-            logger.warning(f"[HARD_NEG] Failed to load PhoBERT-Law: {e}")
+            logger.info(
+                f"[HARD_NEG] Found PhoBERT-Law model at '{phobert_law_path}', loading manually..."
+            )
 
-    # Lựa chọn 3: Fallback to base model (không train)
+            # Nạp thủ công để kiểm soát
+            tokenizer = AutoTokenizer.from_pretrained(phobert_law_path)
+            auto_model = AutoModel.from_pretrained(phobert_law_path)
+
+            # **SỬA LỖI QUAN TRỌNG TẠI ĐÂY**
+            if len(tokenizer) != auto_model.config.vocab_size:
+                logger.warning(
+                    f"[HARD_NEG] Vocab size mismatch detected. Resizing model embeddings to {len(tokenizer)}."
+                )
+                auto_model.resize_token_embeddings(len(tokenizer))
+
+            # Tạo SentenceTransformer từ các thành phần đã được sửa lỗi
+            word_embedding_model = WordEmbeddings(
+                model_name_or_path=None, model=auto_model, tokenizer=tokenizer
+            )
+            pooling_model = Pooling(word_embedding_model.get_word_embedding_dimension())
+            model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
+
+            logger.info(
+                "[HARD_NEG] Successfully loaded and configured PhoBERT-Law model."
+            )
+            return model, "phobert_law_fixed"
+        except Exception as e:
+            logger.warning(
+                f"[HARD_NEG] Failed to load PhoBERT-Law: {e}. Trying next option."
+            )
+
+    # Lựa chọn 3: Fallback to base model (ít tối ưu nhất)
     try:
-        logger.info("[HARD_NEG] Using base model without training...")
+        logger.info(
+            f"[HARD_NEG] No custom models found. Using base model '{config.BI_ENCODER_MODEL_NAME}'..."
+        )
         model = SentenceTransformer(config.BI_ENCODER_MODEL_NAME)
-        logger.info("[HARD_NEG] Successfully loaded base model")
+        logger.info("[HARD_NEG] Successfully loaded base model.")
         return model, "base_model"
     except Exception as e:
-        logger.error(f"[HARD_NEG] Failed to load base model: {e}")
+        logger.error(
+            f"[HARD_NEG] CRITICAL: Failed to load ANY model. Error: {e}", exc_info=True
+        )
         return None, "none"
 
 
-def train_temporary_bi_encoder(triplets, aid_map):
-    """Train Bi-Encoder tam thoi de tim hard negatives (FALLBACK ONLY)"""
+def find_hard_negatives(
+    model: SentenceTransformer, train_data: List[Dict], aid_map: Dict, model_type: str
+) -> List[Dict]:
+    """Tìm các ví dụ "âm tính khó" (hard negatives) bằng model đã được tối ưu cao cấp."""
     logger.info(
-        "[TEMP_BI_ENCODER] Training temporary Bi-Encoder for hard negative mining (FALLBACK)..."
+        f"[HARD_NEG] Finding advanced hard negatives using '{model_type}' model..."
     )
 
-    try:
-        # Load model
-        model = SentenceTransformer(config.BI_ENCODER_MODEL_NAME)
-
-        # Tao training examples
-        train_examples = []
-        for triplet in triplets:
-            train_examples.append(
-                InputExample(
-                    texts=[triplet["anchor"], triplet["positive"], triplet["negative"]]
-                )
-            )
-
-        # Tao dataloader
-        train_dataloader = DataLoader(
-            train_examples, shuffle=True, batch_size=config.BI_ENCODER_BATCH_SIZE
-        )
-
-        # Loss function
-        train_loss = losses.TripletLoss(model)
-
-        # Training arguments
-        num_epochs = 1  # Chỉ train 1 epoch cho model tạm
-        warmup_steps = min(50, len(train_dataloader))
-
-        # Train model
-        model.fit(
-            train_objectives=[(train_dataloader, train_loss)],
-            epochs=num_epochs,
-            warmup_steps=warmup_steps,
-            show_progress_bar=True,
-        )
-
-        logger.info("[TEMP_BI_ENCODER] Temporary Bi-Encoder training completed")
-        return model
-
-    except Exception as e:
-        logger.error(f"[TEMP_BI_ENCODER] Error training temporary Bi-Encoder: {e}")
-        return None
-
-
-def find_hard_negatives(
-    temp_model,
-    train_data,
-    aid_map,
-    model_type="unknown",
-    top_k=None,
-    hard_negative_positions=None,
-):
-    # Use config parameters if not provided
-    if top_k is None:
-        top_k = config.HARD_NEGATIVE_TOP_K
-    if hard_negative_positions is None:
-        hard_negative_positions = config.HARD_NEGATIVE_POSITIONS
-
-    """Tim hard negatives su dung model tối ưu"""
-    logger.info(f"[HARD_NEG] Finding hard negatives using {model_type} model...")
-
-    if temp_model is None:
-        logger.warning("[HARD_NEG] No model available, skipping hard negative mining")
+    if model is None:
+        logger.error("[HARD_NEG] Model is None. Skipping hard negative mining.")
         return []
 
-    hard_negatives = []
+    hard_negatives_triplets = []
     all_contents = list(aid_map.values())
     all_aids = list(aid_map.keys())
 
-    # Optimize batch size based on model type
-    optimal_batch_size = 64 if model_type == "existing_bi_encoder" else 32
-
-    # Tao embeddings cho tat ca contents
     logger.info(
-        f"[HARD_NEG] Creating embeddings for all contents (batch_size={optimal_batch_size})..."
-    )
-    embeddings = temp_model.encode(
-        all_contents, show_progress_bar=True, batch_size=optimal_batch_size
+        f"[HARD_NEG] Creating optimized embeddings for all {len(all_contents)} legal articles..."
     )
 
-    # Tao FAISS index với optimization
+    # OPTIMIZATION: Use larger batch size for better GPU utilization
+    embeddings = model.encode(
+        all_contents, show_progress_bar=True, batch_size=128, convert_to_numpy=True
+    )
+
     dimension = embeddings.shape[1]
-    logger.info(f"[HARD_NEG] Creating FAISS index with dimension {dimension}...")
-
-    # Normalize embeddings for better cosine similarity
     faiss.normalize_L2(embeddings)
-    index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
-    index.add(embeddings.astype("float32"))
 
-    logger.info(f"[HARD_NEG] FAISS index created with {index.ntotal} vectors")
+    # OPTIMIZATION: Use more efficient FAISS index
+    index = faiss.IndexFlatIP(dimension)
+    index.add(embeddings.astype(np.float32))
+    logger.info(f"[HARD_NEG] FAISS index created with {index.ntotal} vectors.")
 
-    logger.info("[HARD_NEG] Searching for hard negatives...")
+    questions = [
+        sample["question"] for sample in train_data if sample.get("relevant_aids")
+    ]
+    question_embeddings = model.encode(
+        questions, show_progress_bar=True, batch_size=128
+    )
+    faiss.normalize_L2(question_embeddings)
 
-    for sample in train_data:
-        question = sample["question"]
-        relevant_aids = sample["relevant_aids"]
+    # OPTIMIZATION: Increase top-k for better negative mining
+    top_k = min(50, len(all_contents))  # Increased from config value
+    scores_batch, indices_batch = index.search(
+        question_embeddings.astype(np.float32), top_k
+    )
 
-        if not relevant_aids:
+    sample_idx = 0
+    for i, sample in enumerate(train_data):
+        if not sample.get("relevant_aids"):
             continue
 
-        # Encode question
-        question_embedding = temp_model.encode([question])
+        question = sample["question"]
+        relevant_aids = set(sample["relevant_aids"])
 
-        # Search top-k results
-        scores, indices = index.search(question_embedding.astype("float32"), top_k)
+        scores, indices = scores_batch[sample_idx], indices_batch[sample_idx]
+        sample_idx += 1
 
-        # Tim hard negatives (top-ranked incorrect results)
-        hard_neg_aids = []
-        hard_neg_scores = []
+        # OPTIMIZATION: Better negative selection strategy
+        hard_neg_candidates = []
+        start, end = 5, 25  # Focus on high-similarity but incorrect candidates
 
-        for i in range(
-            hard_negative_positions[0],
-            min(hard_negative_positions[1] + 1, len(indices[0])),
-        ):
-            candidate_aid = all_aids[indices[0][i]]
+        for j in range(start, min(end, len(indices))):
+            candidate_aid = all_aids[indices[j]]
             if candidate_aid not in relevant_aids:
-                hard_neg_aids.append(candidate_aid)
-                hard_neg_scores.append(scores[0][i])
+                hard_neg_candidates.append(candidate_aid)
 
-        # Sort by similarity score (higher score = more similar = harder negative)
-        if hard_neg_aids:
-            hard_neg_pairs = list(zip(hard_neg_aids, hard_neg_scores))
-            hard_neg_pairs.sort(key=lambda x: x[1], reverse=True)
-            hard_neg_aids = [aid for aid, score in hard_neg_pairs]
-
-        # Tao hard negative triplets
+        # OPTIMIZATION: Add diversity to negative samples
+        selected_negatives = set()
         for positive_aid in relevant_aids:
-            if positive_aid in aid_map:
-                positive_content = aid_map[positive_aid]
+            if positive_aid not in aid_map:
+                continue
+            positive_content = aid_map[positive_aid]
 
-                for hard_neg_aid in hard_neg_aids[
-                    : config.HARD_NEGATIVES_PER_POSITIVE
-                ]:  # Use config parameter
-                    if hard_neg_aid in aid_map:
-                        hard_negative_content = aid_map[hard_neg_aid]
+            # Select diverse negatives
+            neg_count = 0
+            for neg_aid in hard_neg_candidates:
+                if neg_count >= 3:  # Limit per positive for balance
+                    break
 
-                        hard_negative = {
+                if neg_aid not in selected_negatives:
+                    hard_negatives_triplets.append(
+                        {
                             "anchor": question,
                             "positive": positive_content,
-                            "negative": hard_negative_content,
+                            "negative": aid_map[neg_aid],
                             "is_hard_negative": True,
                         }
-                        hard_negatives.append(hard_negative)
+                    )
+                    selected_negatives.add(neg_aid)
+                    neg_count += 1
 
-            logger.info(
-                f"[HARD_NEG] Found {len(hard_negatives)} hard negative triplets"
-            )
-
-        # Log quality metrics
-        if hard_negatives:
-            logger.info(f"[HARD_NEG] Hard negative mining completed successfully")
-            logger.info(
-                f"[HARD_NEG] Average hard negatives per query: {len(hard_negatives) / len([s for s in train_data if s['relevant_aids']]):.1f}"
-            )
-        else:
-            logger.warning(
-                "[HARD_NEG] No hard negatives found, consider adjusting parameters"
-            )
-
-        return hard_negatives
+    logger.info(
+        f"[HARD_NEG] Found {len(hard_negatives_triplets)} high-quality hard negative triplets."
+    )
+    return hard_negatives_triplets
 
 
-def create_enhanced_triplets(initial_triplets, hard_negatives):
-    """Tao triplets nang cao voi hard negatives"""
-    logger.info("[ENHANCED] Creating enhanced triplets with hard negatives...")
+def create_final_dataset(initial_triplets, hard_negatives, train_data, aid_map):
+    """Tạo bộ dữ liệu cuối cùng cho Bi-Encoder và Cross-Encoder."""
+    logger.info("[DATASET] Creating final datasets for Bi-Encoder and Cross-Encoder...")
 
-    enhanced_triplets = []
+    # --- Bi-Encoder Dataset ---
+    bi_encoder_data = initial_triplets + hard_negatives
+    random.shuffle(bi_encoder_data)
 
-    # Them initial triplets
-    for triplet in initial_triplets:
-        enhanced_triplet = {
-            "anchor": triplet["anchor"],
-            "positive": triplet["positive"],
-            "negative": triplet["negative"],
-            "is_hard_negative": False,
-        }
-        enhanced_triplets.append(enhanced_triplet)
-
-    # Them hard negative triplets
-    enhanced_triplets.extend(hard_negatives)
-
-    logger.info(f"[ENHANCED] Created {len(enhanced_triplets)} enhanced triplets")
-    logger.info(f"[ENHANCED] - Initial triplets: {len(initial_triplets)}")
-    logger.info(f"[ENHANCED] - Hard negative triplets: {len(hard_negatives)}")
-
-    return enhanced_triplets
-
-
-def create_pairs(train_data, aid_map):
-    """Tao pairs cho Cross-Encoder"""
-    logger.info("[PAIR] Creating pairs for Cross-Encoder...")
-
-    pairs = []
-    all_aids = list(aid_map.keys())
-
-    for sample in train_data:
-        question = sample["question"]
-        relevant_aids = sample["relevant_aids"]
-
-        if not relevant_aids:
-            continue
-
-        # Positive pairs
-        for positive_aid in relevant_aids:
-            if positive_aid in aid_map:
-                positive_content = aid_map[positive_aid]
-                pair = {
-                    "texts": [question, positive_content],
-                    "label": 1,
-                }
-                pairs.append(pair)
-
-        # Negative pairs
-        negative_aids = [aid for aid in all_aids if aid not in relevant_aids]
-        if negative_aids:
-            # Tao so luong negative pairs bang voi positive pairs
-            num_negatives = min(len(relevant_aids), len(negative_aids))
-            selected_negatives = random.sample(negative_aids, num_negatives)
-
-            for negative_aid in selected_negatives:
-                negative_content = aid_map[negative_aid]
-                pair = {
-                    "texts": [question, negative_content],
-                    "label": 0,
-                }
-                pairs.append(pair)
-
-    logger.info(f"[PAIR] Created {len(pairs)} pairs")
-    return pairs
-
-
-def create_enhanced_pairs(train_data, aid_map, hard_negatives):
-    """Tao pairs nang cao voi hard negatives"""
-    logger.info("[ENHANCED_PAIR] Creating enhanced pairs with hard negatives...")
-
-    pairs = []
-    all_aids = list(aid_map.keys())
-
-    # Tao map tu hard negatives
+    # --- Cross-Encoder Dataset ---
+    cross_encoder_data = []
     hard_neg_map = {}
     for triplet in hard_negatives:
-        question = triplet["anchor"]
-        if question not in hard_neg_map:
-            hard_neg_map[question] = []
-        hard_neg_map[question].append(triplet["negative"])
+        q = triplet["anchor"]
+        if q not in hard_neg_map:
+            hard_neg_map[q] = set()
+        hard_neg_map[q].add(triplet["negative"])
+
+    all_aids = set(aid_map.keys())
 
     for sample in train_data:
         question = sample["question"]
-        relevant_aids = sample["relevant_aids"]
-
+        relevant_aids = set(sample.get("relevant_aids", []))
         if not relevant_aids:
             continue
 
         # Positive pairs
-        for positive_aid in relevant_aids:
-            if positive_aid in aid_map:
-                positive_content = aid_map[positive_aid]
-                pair = {
-                    "texts": [question, positive_content],
-                    "label": 1,
-                }
-                pairs.append(pair)
-
-        # Hard negative pairs
-        if question in hard_neg_map:
-            for hard_neg_content in hard_neg_map[question][
-                :2
-            ]:  # Lay toi da 2 hard negatives
-                pair = {
-                    "texts": [question, hard_neg_content],
-                    "label": 0,
-                    "is_hard_negative": True,
-                }
-                pairs.append(pair)
-
-        # Regular negative pairs (neu can them)
-        negative_aids = [aid for aid in all_aids if aid not in relevant_aids]
-        if negative_aids:
-            num_regular_negatives = max(1, len(relevant_aids) // 2)
-            selected_negatives = random.sample(
-                negative_aids, min(num_regular_negatives, len(negative_aids))
-            )
-
-            for negative_aid in selected_negatives:
-                negative_content = aid_map[negative_aid]
-                pair = {
-                    "texts": [question, negative_content],
-                    "label": 0,
-                    "is_hard_negative": False,
-                }
-                pairs.append(pair)
-
-    logger.info(f"[ENHANCED_PAIR] Created {len(pairs)} enhanced pairs")
-    return pairs
-
-
-def merge_and_augment_data(triplets, pairs):
-    """Merge va augment data toi uu voi advanced techniques"""
-    logger.info("[AUGMENT] Merging and augmenting data with advanced techniques...")
-
-    # Merge Bi-Encoder data
-    bi_encoder_data = []
-    for triplet in triplets:
-        bi_encoder_data.append(triplet)
-
-    # Merge Cross-Encoder data
-    cross_encoder_data = []
-    for pair in pairs:
-        cross_encoder_data.append(pair)
-
-    # Sử dụng config.AUGMENTATION_FACTOR thay vì hardcode
-    augmentation_factor = config.AUGMENTATION_FACTOR
-    legal_keywords_rate = config.LEGAL_KEYWORDS_INJECTION_RATE
-
-    logger.info(f"[AUGMENT] Using augmentation factor: {augmentation_factor}")
-    logger.info(f"[AUGMENT] Using legal keywords injection rate: {legal_keywords_rate}")
-
-    # Advanced Bi-Encoder augmentation
-    augmented_bi_encoder = []
-    for triplet in bi_encoder_data:
-        augmented_bi_encoder.append(triplet)
-
-        # Tính số lượng augmented samples cần tạo
-        num_augmented = max(1, int(augmentation_factor - 1))
-
-        for _ in range(num_augmented):
-            # Advanced augmentation techniques
-            augmented_triplet = apply_advanced_augmentation(
-                triplet, legal_keywords_rate
-            )
-            augmented_bi_encoder.append(augmented_triplet)
-
-    # Advanced Cross-Encoder augmentation
-    augmented_cross_encoder = []
-    for pair in cross_encoder_data:
-        augmented_cross_encoder.append(pair)
-
-        # Tính số lượng augmented samples cần tạo
-        num_augmented = max(1, int(augmentation_factor - 1))
-
-        for _ in range(num_augmented):
-            # Advanced augmentation techniques
-            augmented_pair = apply_advanced_augmentation_pair(pair, legal_keywords_rate)
-            augmented_cross_encoder.append(augmented_pair)
-
-    logger.info(f"[AUGMENT] Original Bi-Encoder: {len(bi_encoder_data)} samples")
-    logger.info(f"[AUGMENT] Augmented Bi-Encoder: {len(augmented_bi_encoder)} samples")
-    logger.info(f"[AUGMENT] Original Cross-Encoder: {len(cross_encoder_data)} samples")
-    logger.info(
-        f"[AUGMENT] Augmented Cross-Encoder: {len(augmented_cross_encoder)} samples"
-    )
-    logger.info(
-        f"[AUGMENT] Total augmentation ratio: {len(augmented_bi_encoder)/len(bi_encoder_data):.2f}x"
-    )
-
-    return augmented_bi_encoder, augmented_cross_encoder
-
-
-def apply_advanced_augmentation(triplet, legal_keywords_rate):
-    """Apply advanced augmentation techniques cho triplet"""
-    augmented_triplet = {
-        "anchor": triplet["anchor"],
-        "positive": triplet["positive"],
-        "negative": triplet["negative"],
-    }
-
-    # Copy hard negative flag if exists
-    if "is_hard_negative" in triplet:
-        augmented_triplet["is_hard_negative"] = triplet["is_hard_negative"]
-
-    # Legal keywords injection
-    if random.random() < legal_keywords_rate:
-        legal_keywords = [
-            "theo quy định",
-            "theo luật",
-            "theo điều",
-            "theo khoản",
-            "theo điểm",
-        ]
-        keyword = random.choice(legal_keywords)
-        augmented_triplet["anchor"] = f"{keyword} {triplet['anchor']}"
-
-    # Synonym replacement (simple version)
-    if random.random() < 0.3:
-        synonyms = {
-            "được": ["có quyền", "được phép"],
-            "phải": ["bắt buộc", "cần phải"],
-            "có": ["sở hữu", "có được"],
-            "là": ["chính là", "được xem là"],
-        }
-
-        for original, replacements in synonyms.items():
-            if original in augmented_triplet["anchor"]:
-                replacement = random.choice(replacements)
-                augmented_triplet["anchor"] = augmented_triplet["anchor"].replace(
-                    original, replacement
+        for aid in relevant_aids:
+            if aid in aid_map:
+                cross_encoder_data.append(
+                    {"texts": [question, aid_map[aid]], "label": 1}
                 )
-                break
 
-    return augmented_triplet
-
-
-def apply_advanced_augmentation_pair(pair, legal_keywords_rate):
-    """Apply advanced augmentation techniques cho pair"""
-    augmented_pair = {
-        "texts": pair["texts"].copy(),
-        "label": pair["label"],
-    }
-
-    # Copy hard negative flag if exists
-    if "is_hard_negative" in pair:
-        augmented_pair["is_hard_negative"] = pair["is_hard_negative"]
-
-    # Legal keywords injection cho query
-    if random.random() < legal_keywords_rate:
-        legal_keywords = [
-            "theo quy định",
-            "theo luật",
-            "theo điều",
-            "theo khoản",
-            "theo điểm",
-        ]
-        keyword = random.choice(legal_keywords)
-        augmented_pair["texts"][0] = f"{keyword} {pair['texts'][0]}"
-
-    # Synonym replacement cho query
-    if random.random() < 0.3:
-        synonyms = {
-            "được": ["có quyền", "được phép"],
-            "phải": ["bắt buộc", "cần phải"],
-            "có": ["sở hữu", "có được"],
-            "là": ["chính là", "được xem là"],
+        # Hard Negative pairs
+        hard_negs_for_q = {
+            aid_map.get(aid) for aid in hard_neg_map.get(question, set())
         }
+        for neg_content in hard_negs_for_q:
+            cross_encoder_data.append({"texts": [question, neg_content], "label": 0})
 
-        for original, replacements in synonyms.items():
-            if original in augmented_pair["texts"][0]:
-                replacement = random.choice(replacements)
-                augmented_pair["texts"][0] = augmented_pair["texts"][0].replace(
-                    original, replacement
+        # Random Negative pairs
+        num_to_add = (
+            len(relevant_aids)
+            + len(hard_negs_for_q)
+            - len(cross_encoder_data) % (len(relevant_aids) * 2)
+        )
+        negative_pool = list(all_aids - relevant_aids)
+        if negative_pool and num_to_add > 0:
+            random_negs = random.sample(
+                negative_pool, min(num_to_add, len(negative_pool))
+            )
+            for neg_aid in random_negs:
+                cross_encoder_data.append(
+                    {"texts": [question, aid_map[neg_aid]], "label": 0}
                 )
-                break
 
-    return augmented_pair
+    random.shuffle(cross_encoder_data)
+
+    logger.info(f"Final Bi-Encoder samples: {len(bi_encoder_data)}")
+    logger.info(f"Final Cross-Encoder samples: {len(cross_encoder_data)}")
+
+    return bi_encoder_data, cross_encoder_data
 
 
 def save_training_data(bi_encoder_data, cross_encoder_data):
-    """Save training data"""
-    logger.info("[SAVE] Saving training data...")
+    """Lưu dữ liệu huấn luyện đã được xử lý ra file."""
+    logger.info("[SAVE] Saving final training data...")
+    config.DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Save Bi-Encoder data
-    bi_encoder_path = config.DATA_PROCESSED_DIR / "bi_encoder_train_advanced.jsonl"
+    # Sử dụng tên file theo config để đảm bảo tính nhất quán
+    bi_encoder_path = config.BI_ENCODER_TRAIN_MIXED_PATH
+    cross_encoder_path = config.TRAIN_PAIRS_MIXED_PATH
+
     with open(bi_encoder_path, "w", encoding="utf-8") as f:
-        for triplet in bi_encoder_data:
-            f.write(json.dumps(triplet, ensure_ascii=False) + "\n")
+        for item in bi_encoder_data:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    # Save Cross-Encoder data
-    cross_encoder_path = (
-        config.DATA_PROCESSED_DIR / "cross_encoder_train_advanced.jsonl"
-    )
     with open(cross_encoder_path, "w", encoding="utf-8") as f:
-        for pair in cross_encoder_data:
-            f.write(json.dumps(pair, ensure_ascii=False) + "\n")
+        for item in cross_encoder_data:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     logger.info(f"[SAVE] Bi-Encoder data saved to: {bi_encoder_path}")
     logger.info(f"[SAVE] Cross-Encoder data saved to: {cross_encoder_path}")
 
-    return bi_encoder_path, cross_encoder_path
 
-
-def run_advanced_training_data_preparation_pipeline():
-    """Chay pipeline chuan bi training data voi advanced techniques"""
-    logger.info("=" * 60)
-    logger.info("ADVANCED TRAINING DATA PREPARATION PIPELINE")
-    logger.info("=" * 60)
+def run_prepare_data_pipeline():
+    """Chạy toàn bộ pipeline chuẩn bị dữ liệu."""
+    logger.info("=" * 80)
+    logger.info("STARTING: Training Data Preparation Pipeline v7.1")
+    logger.info("=" * 80)
+    logger.info("Pipeline Overview:")
+    logger.info("   - Step 1: Load processed data from previous step")
+    logger.info("   - Step 2: Create initial triplets (easy negatives)")
+    logger.info("   - Step 3: Load model for hard negative mining")
+    logger.info("   - Step 4: Mine hard negatives using semantic similarity")
+    logger.info("   - Step 5: Create final training datasets")
+    logger.info("   - Step 6: Save training data to files")
+    logger.info("=" * 80)
 
     try:
-        # Step 1: Load processed data
-        logger.info("STEP 1: Loading processed data...")
+        # Step 1: Load data
         train_data, aid_map = load_processed_data()
 
-        # Step 2: Create initial triplets
-        logger.info("STEP 2: Creating initial triplets...")
+        # Step 2: Create initial "easy negative" triplets
         initial_triplets = create_initial_triplets(train_data, aid_map)
 
-        # Step 3: Load optimized model for hard negative mining
-        logger.info("STEP 3: Loading optimized model for hard negative mining...")
-        temp_model, model_type = load_optimized_model_for_hard_negative_mining()
+        # Step 3: Load or build a model for mining hard negatives
+        model, model_type = load_optimized_model_for_hard_negative_mining()
+        if not model:
+            raise RuntimeError("Could not load any model for hard negative mining.")
 
-        # Fallback to training if no model available
-        if temp_model is None:
-            logger.warning(
-                "No optimized model available, falling back to training temporary model..."
-            )
-            temp_model = train_temporary_bi_encoder(initial_triplets, aid_map)
-            model_type = "temporary_trained"
+        # Step 4: Mine hard negatives
+        hard_negatives = find_hard_negatives(model, train_data, aid_map, model_type)
 
-        # Step 4: Find hard negatives
-        logger.info("STEP 4: Finding hard negatives...")
-        hard_negatives = find_hard_negatives(
-            temp_model, train_data, aid_map, model_type
+        # Clean up model to free GPU memory
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Step 5: Create final training sets
+        bi_encoder_data, cross_encoder_data = create_final_dataset(
+            initial_triplets, hard_negatives, train_data, aid_map
         )
 
-        # Step 5: Create enhanced triplets with hard negatives
-        logger.info("STEP 5: Creating enhanced triplets with hard negatives...")
-        enhanced_triplets = create_enhanced_triplets(initial_triplets, hard_negatives)
+        # Step 6: Save data to files
+        save_training_data(bi_encoder_data, cross_encoder_data)
 
-        # Step 6: Create enhanced pairs with hard negatives
-        logger.info("STEP 6: Creating enhanced pairs with hard negatives...")
-        enhanced_pairs = create_enhanced_pairs(train_data, aid_map, hard_negatives)
-
-        # Step 7: Merge and augment data
-        logger.info("STEP 7: Merging and augmenting data...")
-        bi_encoder_data, cross_encoder_data = merge_and_augment_data(
-            enhanced_triplets, enhanced_pairs
-        )
-
-        # Step 8: Save training data
-        logger.info("STEP 8: Saving training data...")
-        bi_encoder_path, cross_encoder_path = save_training_data(
-            bi_encoder_data, cross_encoder_data
-        )
-
-        # Clean up model
-        if temp_model is not None:
-            del temp_model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.info("[CLEANUP] GPU memory cleared")
-
-        logger.info("=" * 60)
-        logger.info("ADVANCED PIPELINE COMPLETED SUCCESSFULLY!")
-        logger.info("=" * 60)
-        logger.info("PERFORMANCE SUMMARY:")
-        logger.info(f"- Model used for hard negative mining: {model_type}")
-        logger.info(f"- Hard negatives found: {len(hard_negatives)}")
-        logger.info(f"- Total enhanced triplets: {len(enhanced_triplets)}")
-        logger.info(f"- Total enhanced pairs: {len(enhanced_pairs)}")
-        logger.info("=" * 60)
-        logger.info("Advanced techniques implemented:")
-        logger.info("✅ Optimized Model Loading (no training needed)")
-        logger.info("✅ Advanced Hard Negative Mining")
-        logger.info("✅ Enhanced training data with hard negatives")
-        logger.info("Next steps:")
-        logger.info("1. Run model training pipeline")
-        logger.info("2. Deploy system")
-        logger.info("3. Monitor performance")
+        logger.info("=" * 80)
+        logger.info("PIPELINE COMPLETED SUCCESSFULLY!")
+        logger.info(f"- Model used for mining: {model_type}")
+        logger.info(f"- Total Bi-Encoder samples: {len(bi_encoder_data)}")
+        logger.info(f"- Total Cross-Encoder samples: {len(cross_encoder_data)}")
+        logger.info("=" * 80)
         return True
 
     except Exception as e:
-        logger.error(f"Error during advanced pipeline: {e}")
+        logger.error(f"PIPELINE FAILED: {e}", exc_info=True)
         return False
 
 
-def main():
-    """Ham chinh"""
-    logger.info("[START] Bat dau Advanced Training Data Preparation Pipeline...")
-    logger.info(
-        "[OPTIMIZATION] Using optimized model loading for hard negative mining..."
-    )
-
-    success = run_advanced_training_data_preparation_pipeline()
-
-    if success:
-        logger.info(
-            "✅ Advanced Training Data Preparation Pipeline completed successfully!"
-        )
-        logger.info("✅ Enhanced training data san sang cho model training!")
-        logger.info("🚀 Optimized model loading saved significant training time!")
-    else:
-        logger.error("❌ Advanced Training Data Preparation Pipeline failed!")
-        sys.exit(1)
-
-
 if __name__ == "__main__":
-    main()
+    if run_prepare_data_pipeline():
+        logger.info("Training data is ready for the next step.")
+        sys.exit(0)
+    else:
+        logger.error("Pipeline failed. Please check the logs.")
+        sys.exit(1)

@@ -22,18 +22,23 @@ class LegalQAPipeline:
         Support ensemble reranking voi nhieu Cross-Encoder models.
         Support cascaded reranking voi Light Reranker (fast) + Ensemble (strong).
         """
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Using device: {self.device}")
+        # Force CPU mode to avoid CUDA issues completely
+        self.device = "cpu"
+        logger.info(
+            f"Using device: {self.device} (forced CPU mode to avoid CUDA issues)"
+        )
         self.last_retrieved_results = []  # THEM: De luu ket qua tang 1
         self.use_ensemble = use_ensemble
         self.use_cascaded_reranking = use_cascaded_reranking
 
         try:
             logger.info("Loading models and resources...")
-            # Tang 1: Retrieval
+            # Tang 1: Retrieval - Force CPU loading
+            logger.info("Loading Bi-Encoder on CPU...")
             self.bi_encoder = SentenceTransformer(
-                str(config.BI_ENCODER_PATH), device=self.device
+                str(config.BI_ENCODER_PATH), device="cpu"
             )
+            logger.info("Bi-Encoder loaded successfully on CPU")
             self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
             with open(config.INDEX_TO_AID_PATH, "r", encoding="utf-8") as f:
                 self.index_to_aid = json.load(f)
@@ -79,8 +84,8 @@ class LegalQAPipeline:
             model1_path = str(config.CROSS_ENCODER_PATH)
 
         tokenizer1 = AutoTokenizer.from_pretrained(model1_path)
-        model1 = AutoModelForSequenceClassification.from_pretrained(model1_path).to(
-            self.device
+        model1 = AutoModelForSequenceClassification.from_pretrained(
+            model1_path, device_map="cpu"
         )
         model1.eval()
 
@@ -93,8 +98,8 @@ class LegalQAPipeline:
             model2_path = "xlm-roberta-large"
             tokenizer2 = AutoTokenizer.from_pretrained(model2_path)
             model2 = AutoModelForSequenceClassification.from_pretrained(
-                model2_path, num_labels=2
-            ).to(self.device)
+                model2_path, num_labels=2, device_map="cpu"
+            )
             model2.eval()
 
             self.cross_encoder_tokenizers.append(tokenizer2)
@@ -123,8 +128,8 @@ class LegalQAPipeline:
             self.light_reranker_tokenizer = AutoTokenizer.from_pretrained(model_path)
             self.light_reranker_model = (
                 AutoModelForSequenceClassification.from_pretrained(
-                    model_path, num_labels=2
-                ).to(self.device)
+                    model_path, num_labels=2, device_map="cpu"
+                )
             )
             self.light_reranker_model.eval()
 
@@ -149,8 +154,8 @@ class LegalQAPipeline:
             logger.info("[SINGLE] Using base Cross-Encoder model")
 
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = AutoModelForSequenceClassification.from_pretrained(model_path).to(
-            self.device
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_path, device_map="cpu"
         )
         model.eval()
 
@@ -268,8 +273,21 @@ class LegalQAPipeline:
                             if isinstance(tokenized[key], list):
                                 tokenized[key] = torch.tensor(tokenized[key])
 
-                        # Move to device
-                        tokenized = {k: v.to(self.device) for k, v in tokenized.items()}
+                        # Move to device with error handling
+                        try:
+                            tokenized = {
+                                k: v.to(self.device) for k, v in tokenized.items()
+                            }
+                        except RuntimeError as e:
+                            if "CUDA" in str(e):
+                                logger.warning(
+                                    f"CUDA error in batch {i//config.CROSS_ENCODER_BATCH_SIZE}, using CPU"
+                                )
+                                tokenized = {
+                                    k: v.to("cpu") for k, v in tokenized.items()
+                                }
+                            else:
+                                raise e
 
                         logits = model(**tokenized).logits
                         scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
@@ -282,7 +300,7 @@ class LegalQAPipeline:
 
                     except Exception as e:
                         logger.error(
-                            f"Loi khi xu ly batch {i//batch_size} voi model {model_idx}: {e}"
+                            f"Loi khi xu ly batch {i//config.CROSS_ENCODER_BATCH_SIZE} voi model {model_idx}: {e}"
                         )
                         # Them scores mac dinh cho batch nay
                         batch_scores.append([0.0] * len(batch_inputs))
@@ -335,13 +353,20 @@ class LegalQAPipeline:
         logger.debug(
             f"Tang 1: Dang truy xuat {top_k} ung vien cho query: '{query[:50]}...'"
         )
-        query_embedding = self.bi_encoder.encode(
-            query, convert_to_tensor=True, device=self.device
-        )
+
+        # Simple CPU encoding - no device conflicts
+        try:
+            query_embedding = self.bi_encoder.encode(
+                query, convert_to_tensor=True, device="cpu"
+            )
+        except Exception as e:
+            logger.error(f"Error in retrieval encoding: {e}")
+            # Try without device specification as last resort
+            query_embedding = self.bi_encoder.encode(query, convert_to_tensor=True)
+
         query_embedding_np = query_embedding.cpu().numpy().reshape(1, -1)
         faiss.normalize_L2(query_embedding_np)
 
-        # self.faiss_index.nprobe = 16
         distances, indices = self.faiss_index.search(query_embedding_np, top_k)
 
         retrieved_aids = [self.index_to_aid[i] for i in indices[0]]
@@ -530,11 +555,11 @@ class LegalQAPipeline:
                             if isinstance(tokenized[key], list):
                                 tokenized[key] = torch.tensor(tokenized[key])
 
-                        # Move to device
-                        tokenized = {k: v.to(self.device) for k, v in tokenized.items()}
-
+                        # CPU processing - no device conflicts
+                        tokenized = {k: v.to("cpu") for k, v in tokenized.items()}
                         logits = model(**tokenized).logits
-                        scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
+                        scores = torch.softmax(logits, dim=1)[:, 1].tolist()
+
                         batch_scores.append(scores)
 
                         # Clear memory
@@ -546,8 +571,12 @@ class LegalQAPipeline:
                         logger.error(
                             f"Error processing batch {i//config.CROSS_ENCODER_BATCH_SIZE} with model {model_idx}: {e}"
                         )
-                        # Add default scores for this batch
-                        batch_scores.append([0.0] * len(batch_inputs))
+                        # Add default scores for this batch and continue
+                        try:
+                            batch_scores.append([0.0] * len(batch_inputs))
+                        except:
+                            # Fallback if even this fails
+                            batch_scores.append([0.0])
 
                 # Combine scores from ensemble models (average)
                 if batch_scores:
@@ -576,18 +605,52 @@ class LegalQAPipeline:
             if aid not in passage_scores or score > passage_scores[aid]:
                 passage_scores[aid] = score
 
-        # 4. Tao ket qua cuoi cung
-        results = [
-            {
-                "aid": aid,
-                "content": original_passages[aid],
-                "retrieval_score": retrieval_scores_map[aid],
-                "rerank_score": float(rerank_score),
-            }
-            for aid, rerank_score in passage_scores.items()
-        ]
+        # 4. Tao ket qua cuoi cung voi deduplication
+        results = []
+        seen_contents = set()
+
+        for aid, rerank_score in passage_scores.items():
+            content = original_passages[aid]
+
+            # Simple deduplication: check if content is too similar
+            content_normalized = content.lower().strip()
+            is_duplicate = False
+
+            for seen_content in seen_contents:
+                # Check if content is very similar (90% similarity)
+                if self._calculate_similarity(content_normalized, seen_content) > 0.9:
+                    is_duplicate = True
+                    break
+
+            if not is_duplicate:
+                results.append(
+                    {
+                        "aid": aid,
+                        "content": content,
+                        "retrieval_score": retrieval_scores_map[aid],
+                        "rerank_score": float(rerank_score),
+                    }
+                )
+                seen_contents.add(content_normalized)
 
         return sorted(results, key=lambda x: x["rerank_score"], reverse=True)
+
+    def _calculate_similarity(self, text1: str, text2: str) -> float:
+        """Calculate similarity between two texts using simple character-based approach"""
+        if not text1 or not text2:
+            return 0.0
+
+        # Simple character-based similarity
+        set1 = set(text1)
+        set2 = set(text2)
+
+        if not set1 or not set2:
+            return 0.0
+
+        intersection = set1.intersection(set2)
+        union = set1.union(set2)
+
+        return len(intersection) / len(union) if union else 0.0
 
     def predict(self, query: str, top_k_retrieval: int, top_k_final: int):
         """

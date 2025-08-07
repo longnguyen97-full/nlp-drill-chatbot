@@ -206,7 +206,9 @@ class EvaluationReporter:
             Path to the saved report file
         """
         timestamp = report["metadata"].get("timestamp", "latest")
-        report_path = self.reports_dir / f"evaluation_report_{timestamp}.json"
+        # Fix: Replace invalid characters for Windows filename
+        safe_timestamp = timestamp.replace(":", "-").replace("T", "_").replace(".", "_")
+        report_path = self.reports_dir / f"evaluation_report_{safe_timestamp}.json"
 
         with open(report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)

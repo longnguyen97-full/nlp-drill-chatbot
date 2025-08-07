@@ -9,83 +9,116 @@ from core.pipeline import LegalQAPipeline
 
 
 @st.cache_resource
-def load_pipeline():
+def load_pipeline(force_cpu=False):
     """Tai va cache pipeline de tranh load lai moi lan tuong tac."""
-    pipeline = LegalQAPipeline()
-    if not pipeline.is_ready:
-        st.error(
-            "Loi khoi tao Pipeline. Vui long kiem tra logs o terminal de biet chi tiet."
-        )
-        st.warning(
-            "Hay chac chan rang ban da huan luyen cac mo hinh va dat chung vao thu muc 'models', sau do chay 'scripts/04_build_faiss_index.py'."
-        )
+    try:
+        # Set CUDA environment variables to avoid issues
+        import os
+
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+        # Force CPU if requested
+        if force_cpu:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            st.info("Đang sử dụng CPU mode")
+
+        pipeline = LegalQAPipeline()
+        if not pipeline.is_ready:
+            st.error(
+                "Loi khoi tao Pipeline. Vui long kiem tra logs o terminal de biet chi tiet."
+            )
+            st.warning(
+                "Hay chac chan rang ban da huan luyen cac mo hinh va dat chung vao thu muc 'models', sau do chay 'scripts/04_build_faiss_index.py'."
+            )
+            return None
+        return pipeline
+    except Exception as e:
+        st.error(f"Lỗi khởi tạo pipeline: {e}")
+        st.info("Thử khởi động lại app hoặc kiểm tra logs")
         return None
-    return pipeline
 
 
-st.set_page_config(page_title="He thong Hoi-Dap Phap luat", layout="wide")
+st.set_page_config(page_title="Hệ thống Hỏi-Đáp Pháp luật", layout="wide")
 
-st.title("He thong Hoi-Dap Phap luat Viet Nam")
+st.title("🏛️ Hệ thống Hỏi-Đáp Pháp luật Việt Nam")
 st.markdown(
-    "Nhap mot cau hoi ve phap luat va he thong se co gang tim nhung dieu luat lien quan nhat."
+    "Nhập một câu hỏi về pháp luật và hệ thống sẽ cố gắng tìm những điều luật liên quan nhất."
 )
 
-pipeline = load_pipeline()
+# Add architecture info
+with st.expander("ℹ️ Kiến trúc hệ thống (3 tầng)"):
+    st.markdown(
+        """
+    **🎯 Tầng 1 - Bi-Encoder Retrieval:** Tìm kiếm nhanh 100-500 ứng viên  
+    **⚡ Tầng 2 - Light Reranker:** Lọc xuống 50 ứng viên chất lượng cao  
+    **🎯 Tầng 3 - Cross-Encoder Reranking:** Xếp hạng chính xác 5 kết quả cuối cùng
+    """
+    )
+
+# Add device selection option
+with st.sidebar:
+    st.header("⚙️ Cài đặt hệ thống")
+    force_cpu = st.checkbox("🖥️ Force sử dụng CPU (nếu có lỗi CUDA)", value=False)
+
+pipeline = load_pipeline(force_cpu=force_cpu)
 
 if pipeline:
     query = st.text_input(
-        "Nhap cau hoi cua ban:", "Nguoi lao dong duoc nghi phep bao nhieu ngay?"
+        "Nhập câu hỏi của bạn:", "Người lao động được nghỉ phép bao nhiêu ngày?"
     )
 
     with st.sidebar:
-        st.header("Tuy chon nang cao")
+        st.header("🔧 Tùy chọn nâng cao")
         top_k_retrieval = st.slider(
-            "So luong ung vien (Tang 1)",
+            "Số lượng ứng viên (Tầng 1)",
             min_value=10,
             max_value=500,
             value=config.TOP_K_RETRIEVAL,
             step=10,
         )
         top_k_final = st.slider(
-            "So ket qua cuoi cung (Tang 2)",
+            "Số kết quả cuối cùng (Tầng 3)",
             min_value=1,
             max_value=20,
             value=config.TOP_K_FINAL,
             step=1,
         )
 
-    if st.button("Tim kiem", type="primary"):
+    if st.button("🔍 Tìm kiếm", type="primary"):
         if query:
-            with st.spinner("Dang tim kiem va xep hang cac dieu luat..."):
+            with st.spinner("🔄 Đang tìm kiếm và xếp hạng các điều luật..."):
                 results = pipeline.predict(
                     query=query,
                     top_k_retrieval=top_k_retrieval,
                     top_k_final=top_k_final,
                 )
 
-            st.success("Hoan thanh!")
+            st.success("✅ Hoàn thành!")
 
             if not results:
-                st.warning("Khong tim thay ket qua phu hop.")
+                st.warning("⚠️ Không tìm thấy kết quả phù hợp.")
             else:
-                st.subheader(f"Top {len(results)} ket qua lien quan nhat:")
+                st.subheader(f"📋 Top {len(results)} kết quả liên quan nhất:")
                 for i, res in enumerate(results):
                     with st.expander(
-                        f"**Ket qua {i+1}: Dieu {res['aid']}** (Diem: {res['rerank_score']:.4f})"
+                        f"**Kết quả {i+1}: Điều {res['aid']}** (Điểm: {res['rerank_score']:.4f})"
                     ):
-                        st.markdown(f"**Noi dung:**")
+                        st.markdown(f"**📄 Nội dung:**")
                         st.write(res["content"])
                         st.markdown(f"---")
                         st.markdown(
-                            f"**Diem Retrieval (Tang 1):** {res['retrieval_score']:.4f}"
+                            f"**🎯 Điểm Retrieval (Tầng 1 - Bi-Encoder):** {res['retrieval_score']:.4f}"
                         )
                         st.markdown(
-                            f"**Diem Re-rank (Tang 2):** {res['rerank_score']:.4f}"
+                            f"**⚡ Điểm Re-rank (Tầng 3 - Cross-Encoder):** {res['rerank_score']:.4f}"
+                        )
+                        st.markdown(
+                            f"**📊 Tổng điểm:** {(res['retrieval_score'] + res['rerank_score']) / 2:.4f}"
                         )
         else:
-            st.warning("Vui long nhap mot cau hoi.")
+            st.warning("⚠️ Vui lòng nhập một câu hỏi.")
 else:
-    st.header("Pipeline chua san sang")
+    st.header("🚨 Pipeline chưa sẵn sàng")
     st.info(
-        "Vui long kiem tra terminal de biet ly do loi va dam bao cac mo hinh da duoc chuan bi."
+        "⚠️ Vui lòng kiểm tra terminal để biết lý do lỗi và đảm bảo các mô hình đã được chuẩn bị."
     )

@@ -268,8 +268,14 @@ class UnifiedLogger:
 
         if summary:
             self.logger.info("TOM TAT:")
-            for key, value in summary.items():
-                self.logger.info(f"  {key}: {value}")
+            # Ensure summary is a dictionary
+            if isinstance(summary, dict):
+                for key, value in summary.items():
+                    self.logger.info(f"  {key}: {value}")
+            else:
+                self.logger.warning(
+                    f"Summary is not a dictionary: {type(summary)} - {summary}"
+                )
 
         self.logger.info("=" * 80)
 

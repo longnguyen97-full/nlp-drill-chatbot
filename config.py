@@ -1,41 +1,91 @@
 import os
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
+import logging
 
 # ============================================================================
-# ENVIRONMENT VARIABLES SUPPORT
+# ENVIRONMENT VARIABLES SUPPORT WITH ENHANCED ERROR HANDLING
 # ============================================================================
 
 
 def get_env_var(key: str, default: str = None) -> Optional[str]:
     """Get environment variable with fallback to default"""
-    return os.getenv(key, default)
+    value = os.getenv(key, default)
+    if value is None and default is None:
+        logging.warning(f"Environment variable {key} not set and no default provided")
+    return value
 
 
 def get_env_bool(key: str, default: bool = False) -> bool:
-    """Get boolean environment variable"""
+    """Get boolean environment variable with validation"""
     value = os.getenv(key, str(default)).lower()
-    return value in ("true", "1", "yes", "on")
+    valid_true_values = ("true", "1", "yes", "on")
+    valid_false_values = ("false", "0", "no", "off")
 
-
-def get_env_int(key: str, default: int = 0) -> int:
-    """Get integer environment variable"""
-    try:
-        return int(os.getenv(key, str(default)))
-    except ValueError:
+    if value in valid_true_values:
+        return True
+    elif value in valid_false_values:
+        return False
+    else:
+        logging.warning(
+            f"Invalid boolean value '{value}' for {key}, using default: {default}"
+        )
         return default
 
 
-def get_env_float(key: str, default: float = 0.0) -> float:
-    """Get float environment variable"""
+def get_env_int(
+    key: str, default: int = 0, min_value: int = None, max_value: int = None
+) -> int:
+    """Get integer environment variable with validation"""
     try:
-        return float(os.getenv(key, str(default)))
+        value = int(os.getenv(key, str(default)))
+
+        # Validate range if specified
+        if min_value is not None and value < min_value:
+            logging.warning(
+                f"Value {value} for {key} is below minimum {min_value}, using {min_value}"
+            )
+            value = min_value
+        if max_value is not None and value > max_value:
+            logging.warning(
+                f"Value {value} for {key} is above maximum {max_value}, using {max_value}"
+            )
+            value = max_value
+
+        return value
     except ValueError:
+        logging.error(f"Invalid integer value for {key}, using default: {default}")
+        return default
+
+
+def get_env_float(
+    key: str, default: float = 0.0, min_value: float = None, max_value: float = None
+) -> float:
+    """Get float environment variable with validation"""
+    try:
+        value = float(os.getenv(key, str(default)))
+
+        # Validate range if specified
+        if min_value is not None and value < min_value:
+            logging.warning(
+                f"Value {value} for {key} is below minimum {min_value}, using {min_value}"
+            )
+            value = min_value
+        if max_value is not None and value > max_value:
+            logging.warning(
+                f"Value {value} for {key} is above maximum {max_value}, using {max_value}"
+            )
+            value = max_value
+
+        return value
+    except ValueError:
+        logging.error(f"Invalid float value for {key}, using default: {default}")
         return default
 
 
 # ============================================================================
-# BASE CONFIGURATION
+# BASE CONFIGURATION WITH ENHANCED VALIDATION
 # ============================================================================
 
 # Thu muc goc cua du an
@@ -207,123 +257,181 @@ LIGHT_RERANKER_MODEL_NAME = get_env_var(
 )
 
 # ============================================================================
-# HYPERPARAMETERS (WITH ENVIRONMENT SUPPORT)
+# HYPERPARAMETERS (WITH ENHANCED VALIDATION)
 # ============================================================================
 
 # === TOI UU HOA DE KHAC PHUC OVERFITTING ===
 
 # --- Bi-Encoder Hyperparameters (HIGHLY OPTIMIZED FOR MAXIMUM PERFORMANCE) ---
 BI_ENCODER_BATCH_SIZE = get_env_int(
-    "LAWBOT_BI_ENCODER_BATCH_SIZE", 32
+    "LAWBOT_BI_ENCODER_BATCH_SIZE", 32, min_value=1, max_value=128
 )  # Increased for better gradient estimates
 BI_ENCODER_EPOCHS = get_env_int(
-    "LAWBOT_BI_ENCODER_EPOCHS", 5
+    "LAWBOT_BI_ENCODER_EPOCHS", 5, min_value=1, max_value=50
 )  # Increased for better learning
-BI_ENCODER_LR = get_env_float("LAWBOT_BI_ENCODER_LR", 2e-5)  # Optimized learning rate
+BI_ENCODER_LR = get_env_float(
+    "LAWBOT_BI_ENCODER_LR", 2e-5, min_value=1e-6, max_value=1e-3
+)  # Optimized learning rate
 BI_ENCODER_WARMUP_RATIO = get_env_float(
-    "LAWBOT_BI_ENCODER_WARMUP_RATIO", 0.1
+    "LAWBOT_BI_ENCODER_WARMUP_RATIO", 0.1, min_value=0.0, max_value=0.5
 )  # Use ratio for better scheduling
 BI_ENCODER_EVAL_STEPS = get_env_int(
-    "LAWBOT_BI_ENCODER_EVAL_STEPS", 100
+    "LAWBOT_BI_ENCODER_EVAL_STEPS", 100, min_value=10, max_value=1000
 )  # Regular evaluation
 BI_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int(
-    "LAWBOT_BI_ENCODER_GRADIENT_ACCUMULATION_STEPS", 2
+    "LAWBOT_BI_ENCODER_GRADIENT_ACCUMULATION_STEPS", 2, min_value=1, max_value=16
 )  # Optimized for effective batch size
 BI_ENCODER_DATALOADER_NUM_WORKERS = get_env_int(
-    "LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS", 4
+    "LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS", 4, min_value=0, max_value=16
 )  # Better data loading
 
-# --- Cross-Encoder Hyperparameters (HIGHLY OPTIMIZED FOR MAXIMUM PERFORMANCE) ---
+# --- Cross-Encoder Hyperparameters (OPTIMIZED FOR STABILITY & PERFORMANCE) ---
 CROSS_ENCODER_BATCH_SIZE = get_env_int(
-    "LAWBOT_CROSS_ENCODER_BATCH_SIZE", 16
-)  # Increased for better gradient estimates
+    "LAWBOT_CROSS_ENCODER_BATCH_SIZE", 2, min_value=1, max_value=16
+)  # Further reduced for stability
 CROSS_ENCODER_EPOCHS = get_env_int(
-    "LAWBOT_CROSS_ENCODER_EPOCHS", 8
-)  # Increased for better learning
+    "LAWBOT_CROSS_ENCODER_EPOCHS", 3, min_value=1, max_value=20
+)  # Reduced for faster training
 CROSS_ENCODER_LR = get_env_float(
-    "LAWBOT_CROSS_ENCODER_LR", 2e-5
-)  # Optimized learning rate
+    "LAWBOT_CROSS_ENCODER_LR", 1e-5, min_value=1e-6, max_value=1e-3
+)  # Reduced for stability
 CROSS_ENCODER_MAX_LENGTH = get_env_int(
-    "LAWBOT_CROSS_ENCODER_MAX_LENGTH", 512
-)  # Increased for better context
-CROSS_ENCODER_WARMUP_RATIO = get_env_float(
-    "LAWBOT_CROSS_ENCODER_WARMUP_RATIO", 0.1
-)  # Use ratio for better scheduling
+    "LAWBOT_CROSS_ENCODER_MAX_LENGTH", 256, min_value=64, max_value=1024
+)  # Reduced for memory efficiency
+CROSS_ENCODER_WARMUP_RATIO = get_env_int(
+    "LAWBOT_CROSS_ENCODER_WARMUP_RATIO", 100, min_value=10, max_value=1000
+)  # Use steps instead of ratio
 CROSS_ENCODER_EVAL_STEPS = get_env_int(
-    "LAWBOT_CROSS_ENCODER_EVAL_STEPS", 100
-)  # Regular evaluation
+    "LAWBOT_CROSS_ENCODER_EVAL_STEPS", 200, min_value=10, max_value=1000
+)  # Less frequent evaluation
 CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int(
-    "LAWBOT_CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS", 2
-)  # Optimized for effective batch size
+    "LAWBOT_CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS", 4, min_value=1, max_value=16
+)  # Increased for effective batch size
 CROSS_ENCODER_DATALOADER_NUM_WORKERS = get_env_int(
-    "LAWBOT_CROSS_ENCODER_DATALOADER_NUM_WORKERS", 4
-)  # Better data loading
+    "LAWBOT_CROSS_ENCODER_DATALOADER_NUM_WORKERS", 2, min_value=0, max_value=8
+)  # Reduced for stability
 CROSS_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool(
-    "LAWBOT_CROSS_ENCODER_DATALOADER_PIN_MEMORY", True
-)  # Memory optimization
+    "LAWBOT_CROSS_ENCODER_DATALOADER_PIN_MEMORY", False
+)  # Disabled for memory safety
 CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int(
-    "LAWBOT_CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR", 2
-)  # Data prefetching
+    "LAWBOT_CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR", 1, min_value=1, max_value=4
+)  # Reduced prefetching
 
 # === THEM CAC THAM SO MOI ===
 # Early stopping parameters
 BI_ENCODER_EARLY_STOPPING_PATIENCE = get_env_int(
-    "LAWBOT_BI_ENCODER_EARLY_STOPPING_PATIENCE", 3
+    "LAWBOT_BI_ENCODER_EARLY_STOPPING_PATIENCE", 3, min_value=1, max_value=10
 )
 BI_ENCODER_EARLY_STOPPING_THRESHOLD = get_env_float(
-    "LAWBOT_BI_ENCODER_EARLY_STOPPING_THRESHOLD", 0.001
+    "LAWBOT_BI_ENCODER_EARLY_STOPPING_THRESHOLD", 0.001, min_value=0.0, max_value=0.1
 )
 CROSS_ENCODER_EARLY_STOPPING_PATIENCE = get_env_int(
-    "LAWBOT_CROSS_ENCODER_EARLY_STOPPING_PATIENCE", 3
+    "LAWBOT_CROSS_ENCODER_EARLY_STOPPING_PATIENCE", 3, min_value=1, max_value=10
 )
 CROSS_ENCODER_EARLY_STOPPING_THRESHOLD = get_env_float(
-    "LAWBOT_CROSS_ENCODER_EARLY_STOPPING_THRESHOLD", 0.001
+    "LAWBOT_CROSS_ENCODER_EARLY_STOPPING_THRESHOLD", 0.001, min_value=0.0, max_value=0.1
 )
 
 # Data augmentation parameters
-AUGMENTATION_FACTOR = get_env_float("LAWBOT_AUGMENTATION_FACTOR", 1.5)
+AUGMENTATION_FACTOR = get_env_float(
+    "LAWBOT_AUGMENTATION_FACTOR", 1.5, min_value=1.0, max_value=5.0
+)
 LEGAL_KEYWORDS_INJECTION_RATE = get_env_float(
-    "LAWBOT_LEGAL_KEYWORDS_INJECTION_RATE", 0.05
+    "LAWBOT_LEGAL_KEYWORDS_INJECTION_RATE", 0.05, min_value=0.0, max_value=0.5
 )
 
 # Validation parameters
-VALIDATION_SPLIT_RATIO = get_env_float("LAWBOT_VALIDATION_SPLIT_RATIO", 0.15)
-MIN_VALIDATION_SAMPLES = get_env_int("LAWBOT_MIN_VALIDATION_SAMPLES", 100)
+VALIDATION_SPLIT_RATIO = get_env_float(
+    "LAWBOT_VALIDATION_SPLIT_RATIO", 0.15, min_value=0.05, max_value=0.5
+)
+MIN_VALIDATION_SAMPLES = get_env_int(
+    "LAWBOT_MIN_VALIDATION_SAMPLES", 100, min_value=10, max_value=10000
+)
 
 # --- Tham so Pipeline & Danh gia ---
-TOP_K_RETRIEVAL = get_env_int("LAWBOT_TOP_K_RETRIEVAL", 100)
-TOP_K_FINAL = get_env_int("LAWBOT_TOP_K_FINAL", 5)
-EVAL_TEST_SIZE = get_env_float("LAWBOT_EVAL_TEST_SIZE", 0.15)
+TOP_K_RETRIEVAL = get_env_int(
+    "LAWBOT_TOP_K_RETRIEVAL", 100, min_value=10, max_value=1000
+)
+TOP_K_FINAL = get_env_int("LAWBOT_TOP_K_FINAL", 5, min_value=1, max_value=50)
+EVAL_TEST_SIZE = get_env_float(
+    "LAWBOT_EVAL_TEST_SIZE", 0.15, min_value=0.05, max_value=0.5
+)
 
 # --- Tham so Cascaded Reranking ---
-TOP_K_LIGHT_RERANKING = get_env_int("LAWBOT_TOP_K_LIGHT_RERANKING", 50)
-LIGHT_RERANKING_WEIGHT = get_env_float("LAWBOT_LIGHT_RERANKING_WEIGHT", 0.7)
-RETRIEVAL_SCORE_WEIGHT = get_env_float("LAWBOT_RETRIEVAL_SCORE_WEIGHT", 0.3)
-LIGHT_RERANKER_BATCH_SIZE = get_env_int("LAWBOT_LIGHT_RERANKER_BATCH_SIZE", 16)
-LIGHT_RERANKER_MAX_LENGTH = get_env_int("LAWBOT_LIGHT_RERANKER_MAX_LENGTH", 256)
-CROSS_ENCODER_MAX_LENGTH = get_env_int("LAWBOT_CROSS_ENCODER_MAX_LENGTH", 512)
+TOP_K_LIGHT_RERANKING = get_env_int(
+    "LAWBOT_TOP_K_LIGHT_RERANKING", 50, min_value=10, max_value=200
+)
+LIGHT_RERANKING_WEIGHT = get_env_float(
+    "LAWBOT_LIGHT_RERANKING_WEIGHT", 0.7, min_value=0.0, max_value=1.0
+)
+RETRIEVAL_SCORE_WEIGHT = get_env_float(
+    "LAWBOT_RETRIEVAL_SCORE_WEIGHT", 0.3, min_value=0.0, max_value=1.0
+)
+LIGHT_RERANKER_BATCH_SIZE = get_env_int(
+    "LAWBOT_LIGHT_RERANKER_BATCH_SIZE", 16, min_value=1, max_value=64
+)
+LIGHT_RERANKER_MAX_LENGTH = get_env_int(
+    "LAWBOT_LIGHT_RERANKER_MAX_LENGTH", 256, min_value=64, max_value=512
+)
+CROSS_ENCODER_MAX_LENGTH = get_env_int(
+    "LAWBOT_CROSS_ENCODER_MAX_LENGTH", 512, min_value=128, max_value=1024
+)
 
 # --- Tham so Toi Uu Hieu Suat ---
-MAX_SEQUENCE_LENGTH = get_env_int("LAWBOT_MAX_SEQUENCE_LENGTH", 256)
-GRADIENT_CLIP_NORM = get_env_float("LAWBOT_GRADIENT_CLIP_NORM", 1.0)
+MAX_SEQUENCE_LENGTH = get_env_int(
+    "LAWBOT_MAX_SEQUENCE_LENGTH", 256, min_value=64, max_value=1024
+)
+GRADIENT_CLIP_NORM = get_env_float(
+    "LAWBOT_GRADIENT_CLIP_NORM", 1.0, min_value=0.1, max_value=10.0
+)
 FP16_TRAINING = get_env_bool("LAWBOT_FP16_TRAINING", True)
-WARMUP_RATIO = get_env_float("LAWBOT_WARMUP_RATIO", 0.1)
+WARMUP_RATIO = get_env_float("LAWBOT_WARMUP_RATIO", 0.1, min_value=0.0, max_value=0.5)
 
 # --- DataLoader Optimization Parameters ---
 BI_ENCODER_DATALOADER_NUM_WORKERS = get_env_int(
-    "LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS", 4
+    "LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS", 4, min_value=0, max_value=16
 )
 BI_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool(
     "LAWBOT_BI_ENCODER_DATALOADER_PIN_MEMORY", True
 )
 BI_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int(
-    "LAWBOT_BI_ENCODER_DATALOADER_PREFETCH_FACTOR", 2
+    "LAWBOT_BI_ENCODER_DATALOADER_PREFETCH_FACTOR", 2, min_value=1, max_value=4
 )
 CROSS_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool(
     "LAWBOT_CROSS_ENCODER_DATALOADER_PIN_MEMORY", True
 )
 CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int(
-    "LAWBOT_CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR", 2
+    "LAWBOT_CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR", 2, min_value=1, max_value=4
+)
+
+# ============================================================================
+# MEMORY MANAGEMENT & ERROR HANDLING PARAMETERS
+# ============================================================================
+
+# Memory management parameters
+MAX_MEMORY_USAGE_GB = get_env_float(
+    "LAWBOT_MAX_MEMORY_USAGE_GB", 8.0, min_value=1.0, max_value=64.0
+)
+MEMORY_CLEANUP_THRESHOLD = get_env_float(
+    "LAWBOT_MEMORY_CLEANUP_THRESHOLD", 0.8, min_value=0.5, max_value=0.95
+)
+BATCH_SIZE_REDUCTION_FACTOR = get_env_float(
+    "LAWBOT_BATCH_SIZE_REDUCTION_FACTOR", 0.5, min_value=0.1, max_value=0.9
+)
+
+# Error handling parameters
+MAX_RETRIES = get_env_int("LAWBOT_MAX_RETRIES", 3, min_value=1, max_value=10)
+RETRY_DELAY_SECONDS = get_env_int(
+    "LAWBOT_RETRY_DELAY_SECONDS", 30, min_value=5, max_value=300
+)
+TIMEOUT_SECONDS = get_env_int(
+    "LAWBOT_TIMEOUT_SECONDS", 300, min_value=60, max_value=3600
+)
+
+# GPU/CPU fallback parameters
+FORCE_CPU_MODE = get_env_bool("LAWBOT_FORCE_CPU_MODE", False)
+GPU_MEMORY_THRESHOLD_GB = get_env_float(
+    "LAWBOT_GPU_MEMORY_THRESHOLD_GB", 4.0, min_value=1.0, max_value=32.0
 )
 
 # ============================================================================
@@ -331,42 +439,65 @@ CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int(
 # ============================================================================
 
 # Hard negative sampling parameters (moved from magic numbers)
-HARD_NEGATIVE_TOP_K = get_env_int("LAWBOT_HARD_NEGATIVE_TOP_K", 200)
+HARD_NEGATIVE_TOP_K = get_env_int(
+    "LAWBOT_HARD_NEGATIVE_TOP_K", 200, min_value=50, max_value=1000
+)
 HARD_NEGATIVE_POSITIONS = (2, 10)  # Vị trí để lấy hard negative
-HARD_NEGATIVES_PER_POSITIVE = get_env_int("LAWBOT_HARD_NEGATIVES_PER_POSITIVE", 3)
+HARD_NEGATIVES_PER_POSITIVE = get_env_int(
+    "LAWBOT_HARD_NEGATIVES_PER_POSITIVE", 3, min_value=1, max_value=10
+)
 
 # Negative sampling parameters
-NEGATIVE_SAMPLES_PER_POSITIVE = get_env_int("LAWBOT_NEGATIVE_SAMPLES_PER_POSITIVE", 4)
-RANDOM_NEGATIVE_RATIO = get_env_float("LAWBOT_RANDOM_NEGATIVE_RATIO", 0.5)
+NEGATIVE_SAMPLES_PER_POSITIVE = get_env_int(
+    "LAWBOT_NEGATIVE_SAMPLES_PER_POSITIVE", 4, min_value=1, max_value=20
+)
+RANDOM_NEGATIVE_RATIO = get_env_float(
+    "LAWBOT_RANDOM_NEGATIVE_RATIO", 0.5, min_value=0.0, max_value=1.0
+)
 
 # ============================================================================
 # DATA PROCESSING PARAMETERS
 # ============================================================================
 
 # Text processing parameters
-MIN_TEXT_LENGTH = get_env_int("LAWBOT_MIN_TEXT_LENGTH", 20)
-MAX_TEXT_LENGTH = get_env_int("LAWBOT_MAX_TEXT_LENGTH", 1000)
-DAPT_MAX_LENGTH = get_env_int("LAWBOT_DAPT_MAX_LENGTH", 128)
-DAPT_DATASET_SIZE_LIMIT = get_env_int("LAWBOT_DAPT_DATASET_SIZE_LIMIT", 10000)
+MIN_TEXT_LENGTH = get_env_int("LAWBOT_MIN_TEXT_LENGTH", 20, min_value=5, max_value=100)
+MAX_TEXT_LENGTH = get_env_int(
+    "LAWBOT_MAX_TEXT_LENGTH", 1000, min_value=100, max_value=5000
+)
+DAPT_MAX_LENGTH = get_env_int(
+    "LAWBOT_DAPT_MAX_LENGTH", 128, min_value=32, max_value=512
+)
+DAPT_DATASET_SIZE_LIMIT = get_env_int(
+    "LAWBOT_DAPT_DATASET_SIZE_LIMIT", 10000, min_value=1000, max_value=100000
+)
 
 # Data filtering parameters
-EMPTY_CONTENT_THRESHOLD = get_env_float("LAWBOT_EMPTY_CONTENT_THRESHOLD", 0.1)
-MIN_VALID_ARTICLES = get_env_int("LAWBOT_MIN_VALID_ARTICLES", 1000)
+EMPTY_CONTENT_THRESHOLD = get_env_float(
+    "LAWBOT_EMPTY_CONTENT_THRESHOLD", 0.1, min_value=0.0, max_value=0.5
+)
+MIN_VALID_ARTICLES = get_env_int(
+    "LAWBOT_MIN_VALID_ARTICLES", 1000, min_value=100, max_value=100000
+)
 
 # ============================================================================
-# VALIDATION FUNCTIONS
+# ENHANCED VALIDATION FUNCTIONS
 # ============================================================================
 
 
-def validate_config():
-    """Validate configuration settings"""
+def validate_config() -> bool:
+    """Validate configuration settings with enhanced error handling"""
     errors = []
+    warnings = []
 
     # Check required directories
     required_dirs = [DATA_DIR, MODELS_DIR, INDEXES_DIR, REPORTS_DIR, LOGS_DIR]
     for dir_path in required_dirs:
         if not dir_path.exists():
-            dir_path.mkdir(parents=True, exist_ok=True)
+            try:
+                dir_path.mkdir(parents=True, exist_ok=True)
+                warnings.append(f"Created missing directory: {dir_path}")
+            except Exception as e:
+                errors.append(f"Cannot create directory {dir_path}: {e}")
 
     # Check required files
     required_files = [LEGAL_CORPUS_PATH, TRAIN_JSON_PATH]
@@ -374,48 +505,122 @@ def validate_config():
         if not file_path.exists():
             errors.append(f"Required file not found: {file_path}")
 
-    # Validate hyperparameters
-    if BI_ENCODER_BATCH_SIZE <= 0:
-        errors.append("BI_ENCODER_BATCH_SIZE must be positive")
-    if CROSS_ENCODER_BATCH_SIZE <= 0:
-        errors.append("CROSS_ENCODER_BATCH_SIZE must be positive")
-    if BI_ENCODER_LR <= 0:
-        errors.append("BI_ENCODER_LR must be positive")
-    if CROSS_ENCODER_LR <= 0:
-        errors.append("CROSS_ENCODER_LR must be positive")
+    # Validate hyperparameters with enhanced checks
+    hyperparameter_checks = [
+        ("BI_ENCODER_BATCH_SIZE", BI_ENCODER_BATCH_SIZE, 1, 128),
+        ("CROSS_ENCODER_BATCH_SIZE", CROSS_ENCODER_BATCH_SIZE, 1, 16),
+        ("BI_ENCODER_LR", BI_ENCODER_LR, 1e-6, 1e-3),
+        ("CROSS_ENCODER_LR", CROSS_ENCODER_LR, 1e-6, 1e-3),
+        ("TOP_K_RETRIEVAL", TOP_K_RETRIEVAL, 10, 1000),
+        ("TOP_K_FINAL", TOP_K_FINAL, 1, 50),
+    ]
 
+    for name, value, min_val, max_val in hyperparameter_checks:
+        if value < min_val or value > max_val:
+            errors.append(f"{name} ({value}) must be between {min_val} and {max_val}")
+
+    # Validate weight combinations
+    if abs(LIGHT_RERANKING_WEIGHT + RETRIEVAL_SCORE_WEIGHT - 1.0) > 0.01:
+        warnings.append(
+            "LIGHT_RERANKING_WEIGHT + RETRIEVAL_SCORE_WEIGHT should sum to 1.0"
+        )
+
+    # Validate memory settings
+    if MAX_MEMORY_USAGE_GB < 1.0:
+        warnings.append("MAX_MEMORY_USAGE_GB is very low, may cause issues")
+
+    # Print warnings
+    if warnings:
+        print("Configuration Warnings:")
+        for warning in warnings:
+            print(f"  ⚠️  {warning}")
+
+    # Raise errors if any
     if errors:
-        raise ValueError(f"Configuration validation failed:\n" + "\n".join(errors))
+        error_msg = "Configuration validation failed:\n" + "\n".join(errors)
+        raise ValueError(error_msg)
 
     return True
 
 
-def print_config_summary():
-    """Print configuration summary"""
-    print("=" * 60)
+def print_config_summary() -> None:
+    """Print comprehensive configuration summary"""
+    print("=" * 80)
     print("LAWBOT CONFIGURATION SUMMARY")
-    print("=" * 60)
+    print("=" * 80)
     print(f"Environment: {ENVIRONMENT}")
     print(f"Debug Mode: {DEBUG}")
-    print(f"Data Directory: {DATA_DIR}")
-    print(f"Models Directory: {MODELS_DIR}")
-    print(f"Indexes Directory: {INDEXES_DIR}")
-    print(f"Reports Directory: {REPORTS_DIR}")
-    print(f"Logs Directory: {LOGS_DIR}")
+    print()
+    print("Directories:")
+    print(f"  Data: {DATA_DIR}")
+    print(f"  Models: {MODELS_DIR}")
+    print(f"  Indexes: {INDEXES_DIR}")
+    print(f"  Reports: {REPORTS_DIR}")
+    print(f"  Logs: {LOGS_DIR}")
     print()
     print("Hyperparameters:")
-    print(f"  Bi-Encoder Batch Size: {BI_ENCODER_BATCH_SIZE}")
-    print(f"  Bi-Encoder Epochs: {BI_ENCODER_EPOCHS}")
-    print(f"  Bi-Encoder Learning Rate: {BI_ENCODER_LR}")
-    print(f"  Cross-Encoder Batch Size: {CROSS_ENCODER_BATCH_SIZE}")
-    print(f"  Cross-Encoder Epochs: {CROSS_ENCODER_EPOCHS}")
-    print(f"  Cross-Encoder Learning Rate: {CROSS_ENCODER_LR}")
+    print(f"  Bi-Encoder:")
+    print(f"    Batch Size: {BI_ENCODER_BATCH_SIZE}")
+    print(f"    Epochs: {BI_ENCODER_EPOCHS}")
+    print(f"    Learning Rate: {BI_ENCODER_LR}")
+    print(f"    Warmup Ratio: {BI_ENCODER_WARMUP_RATIO}")
+    print(f"  Cross-Encoder:")
+    print(f"    Batch Size: {CROSS_ENCODER_BATCH_SIZE}")
+    print(f"    Epochs: {CROSS_ENCODER_EPOCHS}")
+    print(f"    Learning Rate: {CROSS_ENCODER_LR}")
+    print(f"    Max Length: {CROSS_ENCODER_MAX_LENGTH}")
     print()
     print("Pipeline Settings:")
     print(f"  Top-K Retrieval: {TOP_K_RETRIEVAL}")
     print(f"  Top-K Final: {TOP_K_FINAL}")
     print(f"  Validation Split Ratio: {VALIDATION_SPLIT_RATIO}")
-    print("=" * 60)
+    print()
+    print("Performance Settings:")
+    print(f"  FP16 Training: {FP16_TRAINING}")
+    print(f"  Gradient Clip Norm: {GRADIENT_CLIP_NORM}")
+    print(f"  Max Memory Usage: {MAX_MEMORY_USAGE_GB} GB")
+    print(f"  Force CPU Mode: {FORCE_CPU_MODE}")
+    print("=" * 80)
+
+
+def get_config_dict() -> Dict[str, Any]:
+    """Get configuration as dictionary for logging/serialization"""
+    return {
+        "environment": ENVIRONMENT,
+        "debug": DEBUG,
+        "directories": {
+            "data": str(DATA_DIR),
+            "models": str(MODELS_DIR),
+            "indexes": str(INDEXES_DIR),
+            "reports": str(REPORTS_DIR),
+            "logs": str(LOGS_DIR),
+        },
+        "hyperparameters": {
+            "bi_encoder": {
+                "batch_size": BI_ENCODER_BATCH_SIZE,
+                "epochs": BI_ENCODER_EPOCHS,
+                "learning_rate": BI_ENCODER_LR,
+                "warmup_ratio": BI_ENCODER_WARMUP_RATIO,
+            },
+            "cross_encoder": {
+                "batch_size": CROSS_ENCODER_BATCH_SIZE,
+                "epochs": CROSS_ENCODER_EPOCHS,
+                "learning_rate": CROSS_ENCODER_LR,
+                "max_length": CROSS_ENCODER_MAX_LENGTH,
+            },
+        },
+        "pipeline": {
+            "top_k_retrieval": TOP_K_RETRIEVAL,
+            "top_k_final": TOP_K_FINAL,
+            "validation_split_ratio": VALIDATION_SPLIT_RATIO,
+        },
+        "performance": {
+            "fp16_training": FP16_TRAINING,
+            "gradient_clip_norm": GRADIENT_CLIP_NORM,
+            "max_memory_usage_gb": MAX_MEMORY_USAGE_GB,
+            "force_cpu_mode": FORCE_CPU_MODE,
+        },
+    }
 
 
 # Auto-validate on import
@@ -425,3 +630,4 @@ if __name__ != "__main__":
     except ValueError as e:
         print(f"Configuration Error: {e}")
         print("Please check your environment variables and file paths.")
+        sys.exit(1)

@@ -45,6 +45,54 @@ from .file_utils import (
     load_config,
 )
 
+
+# Add missing classes
+class StepLogger:
+    """Simple step logger for pipeline steps"""
+
+    def __init__(self, step_id):
+        self.step_id = step_id
+        from core.logging_system import get_logger
+
+        self.logger = get_logger(f"step_{step_id}")
+
+    def info(self, message):
+        self.logger.info(message)
+
+    def error(self, message):
+        self.logger.error(message)
+
+    def warning(self, message):
+        self.logger.warning(message)
+
+
+def create_summary_report(steps_info, total_time):
+    """Create a summary report for the pipeline"""
+    from datetime import datetime
+
+    report = []
+    report.append("=" * 80)
+    report.append("[CHART] BAO CAO TONG KET PIPELINE")
+    report.append("=" * 80)
+
+    for step_info in steps_info:
+        status = "[OK]" if step_info["success"] else "[FAIL]"
+        time_str = f"{step_info['time']:.1f}s"
+        report.append(f"{status} {step_info['name']} ({time_str})")
+
+    report.append("")
+    report.append("[CHART] Thong ke:")
+    successful = sum(1 for s in steps_info if s["success"])
+    failed = len(steps_info) - successful
+    report.append(f"   [OK] Thanh cong: {successful}")
+    report.append(f"   [FAIL] That bai: {failed}")
+    report.append(f"   [TIME] Tong thoi gian: {total_time/60:.1f} phut")
+    report.append(f"   [CHART] Ty le thanh cong: {successful/len(steps_info)*100:.1f}%")
+    report.append("=" * 80)
+
+    return "\n".join(report)
+
+
 # Export main functions for backward compatibility
 __all__ = [
     # Data processing
@@ -76,4 +124,7 @@ __all__ = [
     "create_directories",
     "setup_script_paths",
     "load_config",
+    # Pipeline utilities
+    "StepLogger",
+    "create_summary_report",
 ]

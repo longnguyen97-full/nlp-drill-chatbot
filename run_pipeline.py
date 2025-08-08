@@ -19,6 +19,10 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
+import json
+
+# Add project root to path
+sys.path.append(str(Path(__file__).parent))
 
 # Import progress utilities
 from core.progress_tracker import ProgressTracker, StepLogger, create_summary_report
@@ -31,13 +35,75 @@ from core.logging_system import (
     get_logger,
 )
 
+# --- Checkpoint System ---
+CHECKPOINT_FILE = Path("data/processed/pipeline_checkpoint.json")
+
+
+def load_checkpoint():
+    """Tải trạng thái pipeline từ file checkpoint."""
+    if CHECKPOINT_FILE.exists():
+        try:
+            with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Could not read checkpoint file: {e}. Starting fresh.")
+    return {"completed_steps": [], "failed_steps": [], "last_step": None}
+
+
+def save_checkpoint(state):
+    """Lưu trạng thái pipeline vào file checkpoint."""
+    CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+    except IOError as e:
+        print(f"Could not save checkpoint file: {e}")
+
+
+def mark_step_complete(state, step_id):
+    """Đánh dấu một bước đã hoàn thành."""
+    if step_id not in state["completed_steps"]:
+        state["completed_steps"].append(step_id)
+    state["last_step"] = step_id
+    save_checkpoint(state)
+
+
+def mark_step_failed(state, step_id):
+    """Đánh dấu một bước đã thất bại."""
+    if step_id not in state["failed_steps"]:
+        state["failed_steps"].append(step_id)
+    state["last_step"] = step_id
+    save_checkpoint(state)
+
+
+def is_step_complete(state, step_id):
+    """Kiểm tra xem một bước đã hoàn thành chưa."""
+    return step_id in state["completed_steps"]
+
+
+def get_next_step_to_run(state, pipeline_steps):
+    """Tìm bước tiếp theo cần chạy dựa trên checkpoint."""
+    completed_steps = set(state["completed_steps"])
+
+    for step in pipeline_steps:
+        if step["id"] not in completed_steps:
+            return step["id"]
+
+    return None  # Tất cả đã hoàn thành
+
 
 class LegalQAPipeline:
-    """Pipeline toi uu cuc dai cho Legal QA System voi 4 buoc chinh (v7.0)"""
+    """Pipeline toi uu cuc dai cho Legal QA System voi 4 buoc chinh (v8.0) - WITH CHECKPOINT SUPPORT"""
 
-    def __init__(self, skip_filtering: bool = False, include_dapt: bool = True):
+    def __init__(
+        self,
+        skip_filtering: bool = False,
+        include_dapt: bool = True,
+        resume: bool = True,
+    ):
         self.skip_filtering = skip_filtering
         self.include_dapt = include_dapt
+        self.resume = resume
         self.project_root = Path(__file__).parent
         self.scripts_dir = self.project_root / "scripts"
 
@@ -49,6 +115,13 @@ class LegalQAPipeline:
 
         # Progress tracker
         self.progress_tracker = ProgressTracker(len(self.pipeline_steps))
+
+        # Load checkpoint state
+        self.checkpoint_state = (
+            load_checkpoint()
+            if resume
+            else {"completed_steps": [], "failed_steps": [], "last_step": None}
+        )
 
     def setup_logging(self):
         """Thiet lap logging chi tiet"""
@@ -107,12 +180,19 @@ class LegalQAPipeline:
         return steps
 
     def run_step(self, step: Dict) -> bool:
-        """Chay mot buoc trong pipeline voi logging chi tiet"""
+        """Chay mot buoc trong pipeline voi logging chi tiet va checkpoint support"""
         step_id = step["id"]
         step_name = step["name"]
         script_name = step["script"]
         args = step.get("args", [])
         step_description = step.get("description", "")
+
+        # Kiểm tra checkpoint - nếu bước đã hoàn thành thì bỏ qua
+        if is_step_complete(self.checkpoint_state, step_id):
+            self.logger.info(
+                f"[CHECKPOINT] Buoc {step_id} da hoan thanh truoc do, bo qua"
+            )
+            return True
 
         # Log bat dau buoc
         log_step_start(step_name, step_description)
@@ -132,17 +212,22 @@ class LegalQAPipeline:
             step_logger.error(error_msg)
             log_error(error_msg, step_name=step_name)
             self.progress_tracker.end_step(step_start, success=False)
-            duration = time.time() - start_time
-            log_step_end(step_name, success=False, duration=duration)
+            mark_step_failed(self.checkpoint_state, step_id)
             return False
 
-        # Chay script voi real-time output
+        # Chay script
         try:
-            cmd = [sys.executable, str(script_path)] + args
-            step_logger.step_start(f"Bat dau chay script: {script_name}")
-            step_logger.info(f"Command: {' '.join(cmd)}")
+            import subprocess
+            import os
 
-            # Chay voi real-time output
+            # Tao command
+            cmd = [sys.executable, str(script_path)] + args
+            step_logger.info(
+                f"[BUOC {step_id}] [START] Bat dau chay script: {script_name}"
+            )
+            step_logger.info(f"[BUOC {step_id}] Command: {' '.join(cmd)}")
+
+            # Chay script voi timeout va capture output
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -152,79 +237,90 @@ class LegalQAPipeline:
                 universal_newlines=True,
             )
 
-            # Doc output real-time voi gioi han
+            # Doc output real-time
             output_lines = []
             line_count = 0
-            max_lines_to_log = 100  # Gioi han so dong log
-
             while True:
                 output = process.stdout.readline()
                 if output == "" and process.poll() is not None:
                     break
                 if output:
                     output = output.strip()
-                    if output:
-                        line_count += 1
-                        output_lines.append(output)
+                    output_lines.append(output)
+                    line_count += 1
+                    step_logger.info(
+                        f"[BUOC {step_id}] [LIST] Line {line_count}: {output}"
+                    )
 
-                        # Chi log mot so dong dau va cuoi
-                        if line_count <= 50 or line_count > len(output_lines) - 50:
-                            step_logger.step_progress(f"Line {line_count}: {output}")
-                        elif line_count == 51:
-                            step_logger.step_progress(
-                                f"... (skipping {len(output_lines) - 100} lines) ..."
-                            )
-
-            # Cho process hoan thanh
+            # Lay return code
             return_code = process.poll()
-            duration = time.time() - start_time
 
+            # Kiem tra ket qua
             if return_code == 0:
-                step_logger.success(
-                    f"Script hoan thanh thanh cong voi {line_count} dong output"
+                step_logger.info(
+                    f"[BUOC {step_id}] [OK] Script hoan thanh thanh cong voi {line_count} dong output"
                 )
-                step_logger.step_complete(f"Generated {len(output_lines)} output lines")
-                self.progress_tracker.end_step(step_start, success=True, step_info=step)
-
-                # Log ket thuc thanh cong
-                additional_info = {
-                    "Output lines": line_count,
-                    "Return code": return_code,
-                    "Script": script_name,
-                }
+                step_logger.info(
+                    f"[BUOC {step_id}] [OK] Hoan thanh trong {time.time() - start_time:.1f}s Generated {line_count} output lines"
+                )
                 log_step_end(
                     step_name,
-                    success=True,
-                    duration=duration,
-                    additional_info=additional_info,
+                    True,
+                    time.time() - start_time,
+                    {"output_lines": line_count},
                 )
+                self.progress_tracker.end_step(step_start, success=True)
+
+                # Mark step as complete in checkpoint
+                mark_step_complete(self.checkpoint_state, step_id)
+
                 return True
             else:
-                error_msg = f"Script that bai voi return code: {return_code}"
-                step_logger.error(error_msg)
-                step_logger.error(f"Output lines: {len(output_lines)}")
-                log_error(error_msg, step_name=step_name)
-                self.progress_tracker.end_step(
-                    step_start, success=False, step_info=step
+                step_logger.error(
+                    f"[BUOC {step_id}] [FAIL] Script that bai voi return code: {return_code}"
                 )
-                log_step_end(step_name, success=False, duration=duration)
+                step_logger.error(f"[BUOC {step_id}] [FAIL] Output lines: {line_count}")
+                log_error(
+                    f"Script that bai voi return code: {return_code}",
+                    step_name=step_name,
+                )
+                self.progress_tracker.end_step(step_start, success=False)
+
+                # Mark step as failed in checkpoint
+                mark_step_failed(self.checkpoint_state, step_id)
+
                 return False
 
         except Exception as e:
-            error_msg = f"Loi khong mong muon: {e}"
+            error_msg = f"Loi khi chay script {script_name}: {str(e)}"
             step_logger.error(error_msg)
-            log_error(error_msg, exception=e, step_name=step_name)
-            self.progress_tracker.end_step(step_start, success=False, step_info=step)
-            duration = time.time() - start_time
-            log_step_end(step_name, success=False, duration=duration)
+            log_error(error_msg, step_name=step_name)
+            self.progress_tracker.end_step(step_start, success=False)
+
+            # Mark step as failed in checkpoint
+            mark_step_failed(self.checkpoint_state, step_id)
+
             return False
 
     def run_pipeline(self, start_step: Optional[str] = None) -> bool:
-        """Chay toan bo pipeline hoac tu buoc cu the voi logging chi tiet"""
+        """Chay toan bo pipeline hoac tu buoc cu the voi logging chi tiet va checkpoint support"""
         self.logger.info(
-            "[TARGET] LEGAL QA PIPELINE - LUONG TOI UU TICH HOP (INTEGRATED OPTIMIZED V8.0)"
+            "[TARGET] LEGAL QA PIPELINE - LUONG TOI UU TICH HOP (INTEGRATED OPTIMIZED V8.0) - WITH CHECKPOINT"
         )
         self.logger.info("=" * 80)
+
+        # Hiển thị trạng thái checkpoint
+        if self.resume and self.checkpoint_state["completed_steps"]:
+            self.logger.info(
+                f"[CHECKPOINT] Found checkpoint with {len(self.checkpoint_state['completed_steps'])} completed steps"
+            )
+            self.logger.info(
+                f"[CHECKPOINT] Completed steps: {', '.join(self.checkpoint_state['completed_steps'])}"
+            )
+            if self.checkpoint_state["failed_steps"]:
+                self.logger.info(
+                    f"[CHECKPOINT] Failed steps: {', '.join(self.checkpoint_state['failed_steps'])}"
+                )
 
         if self.skip_filtering:
             self.logger.warning(
@@ -242,6 +338,15 @@ class LegalQAPipeline:
             else:
                 self.logger.error(f"[FAIL] Khong tim thay buoc {start_step}")
                 return False
+        else:
+            # Tự động tìm bước tiếp theo từ checkpoint
+            next_step = get_next_step_to_run(self.checkpoint_state, self.pipeline_steps)
+            if next_step:
+                for i, step in enumerate(self.pipeline_steps):
+                    if step["id"] == next_step:
+                        start_index = i
+                        self.logger.info(f"[CHECKPOINT] Resuming from step {next_step}")
+                        break
 
         total_steps = len(self.pipeline_steps) - start_index
         pipeline_start_time = time.time()
@@ -268,6 +373,9 @@ class LegalQAPipeline:
                 if step["required"]:
                     self.logger.error(
                         f"[ERROR] Pipeline dung lai tai buoc {step['id']} (bat buoc)"
+                    )
+                    self.logger.info(
+                        f"[CHECKPOINT] Progress saved. You can resume from step {step['id']} later."
                     )
 
                     # Tao bao cao tong ket
@@ -311,6 +419,13 @@ class LegalQAPipeline:
             "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Integrated Optimized Training) va evaluation toan dien!"
         )
 
+        # Xóa checkpoint khi hoàn thành
+        if CHECKPOINT_FILE.exists():
+            CHECKPOINT_FILE.unlink()
+            self.logger.info(
+                "[CHECKPOINT] Pipeline completed successfully, checkpoint file removed."
+            )
+
         # Tao bao cao tong ket
         summary = create_summary_report(steps_info, total_time)
         self.logger.info(summary)
@@ -324,76 +439,96 @@ class LegalQAPipeline:
             "Total time": f"{total_time:.2f}s",
         }
         log_session_end(success=True, summary=summary_dict)
-
         return True
 
     def show_steps(self):
-        """Hien thi danh sach cac buoc voi thong tin chi tiet"""
-        self.logger.info(
-            "[LIST] DANH SACH CAC BUOC PIPELINE (INTEGRATED OPTIMIZED TRAINING V8.0):"
-        )
+        """Hien thi danh sach cac buoc trong pipeline"""
+        self.logger.info("=" * 80)
+        self.logger.info("DANH SACH CAC BUOC TRONG PIPELINE:")
         self.logger.info("=" * 80)
 
         for i, step in enumerate(self.pipeline_steps, 1):
-            status = "[REQUIRED]" if step["required"] else "[OPTIONAL]"
-            args_str = f" {' '.join(step.get('args', []))}" if step.get("args") else ""
-            estimated_time = step.get("estimated_time", "Khong xac dinh")
-
-            self.logger.info(f"{status} Buoc {i:02d} ({step['id']}): {step['name']}")
-            self.logger.info(f"   [NOTE] {step['description']}")
-            self.logger.info(f"   [TOOL] {step['script']}{args_str}")
-            self.logger.info(f"   [TIME] {estimated_time}")
+            status = (
+                "[COMPLETED]"
+                if is_step_complete(self.checkpoint_state, step["id"])
+                else "[PENDING]"
+            )
+            required = "[REQUIRED]" if step["required"] else "[OPTIONAL]"
+            self.logger.info(
+                f"{i:2d}. {step['id']:2s} - {step['name']} {status} {required}"
+            )
+            self.logger.info(f"     Mo ta: {step['description']}")
+            self.logger.info(f"     Thoi gian: {step['estimated_time']}")
             self.logger.info("")
 
-        self.logger.info("[REQUIRED] = Bat buoc | [OPTIONAL] = Tuy chon")
-        self.logger.info(
-            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Integrated Optimized Training), evaluation toan dien, va best practices"
-        )
+    def clear_checkpoint(self):
+        """Xóa checkpoint để chạy lại từ đầu"""
+        if CHECKPOINT_FILE.exists():
+            CHECKPOINT_FILE.unlink()
+            self.checkpoint_state = {
+                "completed_steps": [],
+                "failed_steps": [],
+                "last_step": None,
+            }
+            self.logger.info(
+                "[CHECKPOINT] Checkpoint cleared. Pipeline will start from beginning."
+            )
 
 
 def main():
     """Ham chinh"""
-    parser = argparse.ArgumentParser(
-        description="[START] Legal QA Pipeline v8.0 - Integrated Optimized Training (State-of-the-Art)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Vi du su dung:
-  python run_pipeline.py                    # Chay toan bo pipeline (bao gom DAPT)
-  python run_pipeline.py --no-dapt          # Chay pipeline khong bao gom DAPT
-  python run_pipeline.py --step 02          # Chay tu buoc 02
-  python run_pipeline.py --skip-filtering   # Bo qua buoc filtering dataset
-  python run_pipeline.py --list-steps       # Xem danh sach buoc
-        """,
-    )
+    import argparse
 
-    parser.add_argument("--step", help="Chay tu buoc cu the (VD: 00, 01, 02, 03)")
+    parser = argparse.ArgumentParser(description="Legal QA Pipeline v8.0")
+    parser.add_argument("--start-step", help="Bat dau tu buoc cu the (e.g., 02)")
     parser.add_argument(
-        "--skip-filtering", action="store_true", help="Bo qua buoc filtering dataset"
+        "--skip-filtering", action="store_true", help="Bo qua filtering dataset"
+    )
+    parser.add_argument("--no-dapt", action="store_true", help="Bo qua DAPT step")
+    parser.add_argument(
+        "--no-resume", action="store_true", help="Khong resume tu checkpoint"
     )
     parser.add_argument(
-        "--no-dapt",
+        "--clear-checkpoint",
         action="store_true",
-        help="Bo qua buoc DAPT (Domain-Adaptive Pre-training)",
+        help="Xoa checkpoint va chay lai tu dau",
     )
     parser.add_argument(
-        "--list-steps", action="store_true", help="Hien thi danh sach cac buoc"
+        "--show-steps", action="store_true", help="Hien thi danh sach cac buoc"
     )
 
     args = parser.parse_args()
 
     # Tao pipeline
     pipeline = LegalQAPipeline(
-        skip_filtering=args.skip_filtering, include_dapt=not args.no_dapt
+        skip_filtering=args.skip_filtering,
+        include_dapt=not args.no_dapt,
+        resume=not args.no_resume,
     )
 
-    # Xu ly cac tuy chon
-    if args.list_steps:
+    # Clear checkpoint nếu được yêu cầu
+    if args.clear_checkpoint:
+        pipeline.clear_checkpoint()
+
+    # Show steps nếu được yêu cầu
+    if args.show_steps:
         pipeline.show_steps()
         return
 
     # Chay pipeline
-    success = pipeline.run_pipeline(start_step=args.step)
-    sys.exit(0 if success else 1)
+    success = pipeline.run_pipeline(start_step=args.start_step)
+
+    if success:
+        print("\n" + "=" * 80)
+        print("🎉 PIPELINE HOAN THANH THANH CONG!")
+        print("🚀 He thong Legal QA v8.0 da san sang su dung!")
+        print("=" * 80)
+    else:
+        print("\n" + "=" * 80)
+        print("❌ PIPELINE THAT BAI!")
+        print("💡 Ban co the resume tu buoc bi loi bang cach chay:")
+        print("   python run_pipeline.py --start-step <step_id>")
+        print("=" * 80)
 
 
 if __name__ == "__main__":

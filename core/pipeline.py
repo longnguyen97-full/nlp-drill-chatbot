@@ -6,13 +6,67 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import numpy as np
 import logging
-from typing import List
+from typing import List, Dict, Any, Optional, Tuple
+import gc
+import psutil
+import time
+from contextlib import contextmanager
 
 import config
 from core.logging_system import get_logger
 
 # Get logger for this module
 logger = get_logger(__name__)
+
+
+class MemoryManager:
+    """Memory management utility for pipeline operations"""
+
+    def __init__(self, max_memory_gb: float = 8.0):
+        self.max_memory_gb = max_memory_gb
+        self.process = psutil.Process()
+
+    def get_memory_usage(self) -> float:
+        """Get current memory usage in GB"""
+        return self.process.memory_info().rss / (1024**3)
+
+    def check_memory_usage(self) -> bool:
+        """Check if memory usage is within limits"""
+        current_usage = self.get_memory_usage()
+        return current_usage < self.max_memory_gb
+
+    def force_garbage_collection(self):
+        """Force garbage collection"""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    @contextmanager
+    def memory_monitor(self, operation_name: str):
+        """Context manager for memory monitoring"""
+        start_memory = self.get_memory_usage()
+        start_time = time.time()
+
+        try:
+            yield
+        finally:
+            end_memory = self.get_memory_usage()
+            end_time = time.time()
+
+            memory_diff = end_memory - start_memory
+            time_taken = end_time - start_time
+
+            logger.info(
+                f"[MEMORY] {operation_name}: "
+                f"Memory: {start_memory:.2f}GB → {end_memory:.2f}GB "
+                f"(Δ{memory_diff:+.2f}GB), Time: {time_taken:.2f}s"
+            )
+
+            if memory_diff > 1.0:  # More than 1GB increase
+                logger.warning(
+                    f"[MEMORY] Large memory increase in {operation_name}: {memory_diff:.2f}GB"
+                )
+                self.force_garbage_collection()
 
 
 class LegalQAPipeline:
@@ -22,6 +76,14 @@ class LegalQAPipeline:
         Support ensemble reranking voi nhieu Cross-Encoder models.
         Support cascaded reranking voi Light Reranker (fast) + Ensemble (strong).
         """
+        # Initialize memory manager
+        self.memory_manager = MemoryManager(config.MAX_MEMORY_USAGE_GB)
+
+        # Memory monitoring
+        memory = psutil.virtual_memory()
+        available_memory_gb = memory.available / (1024**3)
+        logger.info(f"[PIPELINE] Available system memory: {available_memory_gb:.1f} GB")
+
         # Force CPU mode to avoid CUDA issues completely
         self.device = "cpu"
         logger.info(
@@ -33,43 +95,49 @@ class LegalQAPipeline:
 
         try:
             logger.info("Loading models and resources...")
-            # Tang 1: Retrieval - Force CPU loading
-            logger.info("Loading Bi-Encoder on CPU...")
-            self.bi_encoder = SentenceTransformer(
-                str(config.BI_ENCODER_PATH), device="cpu"
-            )
-            logger.info("Bi-Encoder loaded successfully on CPU")
-            self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
-            with open(config.INDEX_TO_AID_PATH, "r", encoding="utf-8") as f:
-                self.index_to_aid = json.load(f)
 
-            # Tang 2: Light Re-ranking (Light Reranker) - for cascaded reranking
-            if self.use_cascaded_reranking:
-                self._load_light_reranker_model()
+            # Load models with memory monitoring
+            with self.memory_manager.memory_monitor("Model Loading"):
+                # Tang 1: Retrieval - Force CPU loading
+                logger.info("Loading Bi-Encoder on CPU...")
+                self.bi_encoder = SentenceTransformer(
+                    str(config.BI_ENCODER_PATH), device="cpu"
+                )
+                logger.info("Bi-Encoder loaded successfully on CPU")
 
-            # Tang 3: Strong Re-ranking (Ensemble)
-            self.cross_encoders = []
-            self.cross_encoder_tokenizers = []
+                self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
+                with open(config.INDEX_TO_AID_PATH, "r", encoding="utf-8") as f:
+                    self.index_to_aid = json.load(f)
 
-            if self.use_ensemble:
-                # Load multiple Cross-Encoder models for ensemble
-                self._load_ensemble_models()
-            else:
-                # Load single Cross-Encoder model
-                self._load_single_model()
+                # Tang 2: Light Re-ranking (Light Reranker) - for cascaded reranking
+                if self.use_cascaded_reranking:
+                    self._load_light_reranker_model()
 
-            # Du lieu
-            with open(config.AID_MAP_PATH, "rb") as f:
-                self.aid_map = pickle.load(f)
+                # Tang 3: Strong Re-ranking (Ensemble)
+                self.cross_encoders = []
+                self.cross_encoder_tokenizers = []
+
+                if self.use_ensemble:
+                    # Load multiple Cross-Encoder models for ensemble
+                    self._load_ensemble_models()
+                else:
+                    # Load single Cross-Encoder model
+                    self._load_single_model()
+
+                # Du lieu
+                with open(config.AID_MAP_PATH, "rb") as f:
+                    self.aid_map = pickle.load(f)
 
             logger.info("Pipeline loaded successfully!")
             self.is_ready = True
+
         except Exception as e:
             logger.error(f"Critical error initializing pipeline: {e}")
             logger.error(
                 "Please ensure models and index files are trained and placed correctly."
             )
             self.is_ready = False
+            raise
 
     def _load_ensemble_models(self):
         """Load multiple Cross-Encoder models for ensemble reranking"""
@@ -83,35 +151,40 @@ class LegalQAPipeline:
             logger.info("[ENSEMBLE] Loading base PhoBERT model...")
             model1_path = str(config.CROSS_ENCODER_PATH)
 
-        tokenizer1 = AutoTokenizer.from_pretrained(model1_path)
-        model1 = AutoModelForSequenceClassification.from_pretrained(
-            model1_path, device_map="cpu"
-        )
-        model1.eval()
-
-        self.cross_encoder_tokenizers.append(tokenizer1)
-        self.cross_encoders.append(model1)
-
-        # Model 2: XLM-RoBERTa (alternative model for ensemble)
         try:
-            logger.info("[ENSEMBLE] Loading XLM-RoBERTa model...")
-            model2_path = "xlm-roberta-large"
-            tokenizer2 = AutoTokenizer.from_pretrained(model2_path)
-            model2 = AutoModelForSequenceClassification.from_pretrained(
-                model2_path, num_labels=2, device_map="cpu"
+            tokenizer1 = AutoTokenizer.from_pretrained(model1_path)
+            model1 = AutoModelForSequenceClassification.from_pretrained(
+                model1_path, device_map="cpu"
             )
-            model2.eval()
+            model1.eval()
 
-            self.cross_encoder_tokenizers.append(tokenizer2)
-            self.cross_encoders.append(model2)
+            self.cross_encoder_tokenizers.append(tokenizer1)
+            self.cross_encoders.append(model1)
 
-            logger.info(
-                "[ENSEMBLE] Successfully loaded 2 Cross-Encoder models for ensemble"
-            )
+            # Model 2: XLM-RoBERTa (alternative model for ensemble)
+            try:
+                logger.info("[ENSEMBLE] Loading XLM-RoBERTa model...")
+                model2_path = "xlm-roberta-large"
+                tokenizer2 = AutoTokenizer.from_pretrained(model2_path)
+                model2 = AutoModelForSequenceClassification.from_pretrained(
+                    model2_path, num_labels=2, device_map="cpu"
+                )
+                model2.eval()
+
+                self.cross_encoder_tokenizers.append(tokenizer2)
+                self.cross_encoders.append(model2)
+
+                logger.info(
+                    "[ENSEMBLE] Successfully loaded 2 Cross-Encoder models for ensemble"
+                )
+
+            except Exception as e:
+                logger.warning(f"[ENSEMBLE] Could not load XLM-RoBERTa model: {e}")
+                logger.info("[ENSEMBLE] Using single Cross-Encoder model")
 
         except Exception as e:
-            logger.warning(f"[ENSEMBLE] Could not load XLM-RoBERTa model: {e}")
-            logger.info("[ENSEMBLE] Using single Cross-Encoder model")
+            logger.error(f"[ENSEMBLE] Error loading ensemble models: {e}")
+            raise
 
     def _load_light_reranker_model(self):
         """Load Light Reranker model for light reranking in cascaded pipeline"""
@@ -145,24 +218,31 @@ class LegalQAPipeline:
         """Load single Cross-Encoder model"""
         logger.info("[SINGLE] Loading single Cross-Encoder model...")
 
-        # Use PhoBERT-Law if available, otherwise use base model
-        if config.PHOBERT_LAW_PATH.exists():
-            model_path = str(config.PHOBERT_LAW_PATH)
-            logger.info("[SINGLE] Using PhoBERT-Law model")
-        else:
-            model_path = str(config.CROSS_ENCODER_PATH)
-            logger.info("[SINGLE] Using base Cross-Encoder model")
+        try:
+            # Use PhoBERT-Law if available, otherwise use base model
+            if config.PHOBERT_LAW_PATH.exists():
+                model_path = str(config.PHOBERT_LAW_PATH)
+                logger.info("[SINGLE] Using PhoBERT-Law model")
+            else:
+                model_path = str(config.CROSS_ENCODER_PATH)
+                logger.info("[SINGLE] Using base Cross-Encoder model")
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_path, device_map="cpu"
-        )
-        model.eval()
+            tokenizer = AutoTokenizer.from_pretrained(model_path)
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_path, device_map="cpu"
+            )
+            model.eval()
 
-        self.cross_encoder_tokenizers.append(tokenizer)
-        self.cross_encoders.append(model)
+            self.cross_encoder_tokenizers.append(tokenizer)
+            self.cross_encoders.append(model)
 
-    def retrieve_batch(self, queries: List[str], top_k: int):
+        except Exception as e:
+            logger.error(f"[SINGLE] Error loading single model: {e}")
+            raise
+
+    def retrieve_batch(
+        self, queries: List[str], top_k: int
+    ) -> Tuple[List[List[str]], np.ndarray]:
         """
         TOI UU: Thuc hien Tang 1 (Retrieval) cho mot batch cac cau hoi.
         """
@@ -173,26 +253,33 @@ class LegalQAPipeline:
         logger.info(
             f"Tang 1: Dang truy xuat batch {top_k} ung vien cho {len(queries)} cau hoi..."
         )
-        # Ma hoa tat ca cau hoi trong mot batch
-        query_embeddings = self.bi_encoder.encode(
-            queries, convert_to_tensor=True, device=self.device, show_progress_bar=True
-        )
-        query_embeddings_np = query_embeddings.cpu().numpy()
-        faiss.normalize_L2(query_embeddings_np)
 
-        # Tim kiem tren FAISS cho tat ca cac cau hoi trong mot batch
-        distances_batch, indices_batch = self.faiss_index.search(
-            query_embeddings_np, top_k
-        )
+        with self.memory_manager.memory_monitor("Batch Retrieval"):
+            # Ma hoa tat ca cau hoi trong mot batch
+            query_embeddings = self.bi_encoder.encode(
+                queries,
+                convert_to_tensor=True,
+                device=self.device,
+                show_progress_bar=True,
+            )
+            query_embeddings_np = query_embeddings.cpu().numpy()
+            faiss.normalize_L2(query_embeddings_np)
 
-        # Chuyen doi indices thanh AIDs
-        results_aids = [
-            [self.index_to_aid[i] for i in indices] for indices in indices_batch
-        ]
+            # Tim kiem tren FAISS cho tat ca cac cau hoi trong mot batch
+            distances_batch, indices_batch = self.faiss_index.search(
+                query_embeddings_np, top_k
+            )
 
-        return results_aids, distances_batch
+            # Chuyen doi indices thanh AIDs
+            results_aids = [
+                [self.index_to_aid[i] for i in indices] for indices in indices_batch
+            ]
 
-    def rerank_batch(self, queries: List[str], retrieved_aids_batch: List[List[str]]):
+            return results_aids, distances_batch
+
+    def rerank_batch(
+        self, queries: List[str], retrieved_aids_batch: List[List[str]]
+    ) -> List[List[str]]:
         """
         TOI UU: Thuc hien Tang 2 (Re-ranking) cho mot batch cac cau hoi, voi ho tro ensemble va chunking.
         DA TOI UU: Memory management va error handling.
@@ -205,147 +292,154 @@ class LegalQAPipeline:
             f"Tang 2: Dang xep hang lai batch {len(queries)} cau hoi voi ensemble..."
         )
 
-        chunk_size = config.CROSS_ENCODER_MAX_LENGTH
-        overlap = 50
+        with self.memory_manager.memory_monitor("Batch Reranking"):
+            chunk_size = config.CROSS_ENCODER_MAX_LENGTH
+            overlap = 50
 
-        cross_encoder_inputs = []  # List cac cap [query, chunk_text]
-        chunk_info_map = []  # Map tu index cua chunk ve (chi so cau hoi, aid goc)
+            cross_encoder_inputs = []  # List cac cap [query, chunk_text]
+            chunk_info_map = []  # Map tu index cua chunk ve (chi so cau hoi, aid goc)
 
-        # TOI UU: Memory management - xu ly tung query mot
-        for query_idx, query in enumerate(queries):
-            query_inputs = []
-            query_chunk_info = []
+            # TOI UU: Memory management - xu ly tung query mot
+            for query_idx, query in enumerate(queries):
+                query_inputs = []
+                query_chunk_info = []
 
-            for aid in retrieved_aids_batch[query_idx]:
-                if aid in self.aid_map:
-                    passage = self.aid_map[aid]
-                    # Use first tokenizer for chunking
-                    passage_tokens = self.cross_encoder_tokenizers[0].encode(
-                        passage, add_special_tokens=False
-                    )
+                for aid in retrieved_aids_batch[query_idx]:
+                    if aid in self.aid_map:
+                        passage = self.aid_map[aid]
+                        # Use first tokenizer for chunking
+                        passage_tokens = self.cross_encoder_tokenizers[0].encode(
+                            passage, add_special_tokens=False
+                        )
 
-                    if len(passage_tokens) <= chunk_size:
-                        query_inputs.append([query, passage])
-                        query_chunk_info.append({"query_idx": query_idx, "aid": aid})
-                    else:
-                        for i in range(0, len(passage_tokens), chunk_size - overlap):
-                            chunk_token_ids = passage_tokens[i : i + chunk_size]
-                            chunk_text = self.cross_encoder_tokenizers[0].decode(
-                                chunk_token_ids
-                            )
-                            query_inputs.append([query, chunk_text])
+                        if len(passage_tokens) <= chunk_size:
+                            query_inputs.append([query, passage])
                             query_chunk_info.append(
                                 {"query_idx": query_idx, "aid": aid}
                             )
-
-            cross_encoder_inputs.extend(query_inputs)
-            chunk_info_map.extend(query_chunk_info)
-
-        if not cross_encoder_inputs:
-            return [[] for _ in queries]
-
-        # TOI UU: Batch processing voi ensemble
-        all_ensemble_scores = []
-        batch_size = config.CROSS_ENCODER_BATCH_SIZE
-
-        with torch.no_grad():
-            for i in range(0, len(cross_encoder_inputs), batch_size):
-                batch_inputs = cross_encoder_inputs[i : i + batch_size]
-
-                batch_scores = []
-
-                # Get scores from each model in ensemble
-                for model_idx, (tokenizer, model) in enumerate(
-                    zip(self.cross_encoder_tokenizers, self.cross_encoders)
-                ):
-                    try:
-                        # OPTIMIZED TOKENIZATION: Use return_tensors=None for better compatibility
-                        tokenized = tokenizer(
-                            batch_inputs,
-                            padding=True,
-                            truncation=True,
-                            max_length=chunk_size,
-                            return_tensors=None,  # Changed from "pt" to None for better compatibility
-                        )
-
-                        # Convert to tensors manually for better control
-                        for key in tokenized:
-                            if isinstance(tokenized[key], list):
-                                tokenized[key] = torch.tensor(tokenized[key])
-
-                        # Move to device with error handling
-                        try:
-                            tokenized = {
-                                k: v.to(self.device) for k, v in tokenized.items()
-                            }
-                        except RuntimeError as e:
-                            if "CUDA" in str(e):
-                                logger.warning(
-                                    f"CUDA error in batch {i//config.CROSS_ENCODER_BATCH_SIZE}, using CPU"
-                                )
-                                tokenized = {
-                                    k: v.to("cpu") for k, v in tokenized.items()
-                                }
-                            else:
-                                raise e
-
-                        logits = model(**tokenized).logits
-                        scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
-                        batch_scores.append(scores)
-
-                        # TOI UU: Clear memory
-                        del tokenized, logits
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-
-                    except Exception as e:
-                        logger.error(
-                            f"Loi khi xu ly batch {i//config.CROSS_ENCODER_BATCH_SIZE} voi model {model_idx}: {e}"
-                        )
-                        # Them scores mac dinh cho batch nay
-                        batch_scores.append([0.0] * len(batch_inputs))
-
-                # Combine scores from ensemble models (average)
-                if batch_scores:
-                    ensemble_scores = []
-                    for score_idx in range(len(batch_scores[0])):
-                        model_scores = [
-                            scores[score_idx]
-                            for scores in batch_scores
-                            if score_idx < len(scores)
-                        ]
-                        if model_scores:
-                            ensemble_score = sum(model_scores) / len(model_scores)
-                            ensemble_scores.append(ensemble_score)
                         else:
-                            ensemble_scores.append(0.0)
+                            for i in range(
+                                0, len(passage_tokens), chunk_size - overlap
+                            ):
+                                chunk_token_ids = passage_tokens[i : i + chunk_size]
+                                chunk_text = self.cross_encoder_tokenizers[0].decode(
+                                    chunk_token_ids
+                                )
+                                query_inputs.append([query, chunk_text])
+                                query_chunk_info.append(
+                                    {"query_idx": query_idx, "aid": aid}
+                                )
 
-                    all_ensemble_scores.extend(ensemble_scores)
-                else:
-                    # Fallback: add default scores
-                    all_ensemble_scores.extend([0.0] * len(batch_inputs))
+                cross_encoder_inputs.extend(query_inputs)
+                chunk_info_map.extend(query_chunk_info)
 
-        # TOI UU: Efficient score aggregation
-        passage_scores = {}  # Key: (query_idx, aid), Value: max_score
-        for i, score in enumerate(all_ensemble_scores):
-            info = chunk_info_map[i]
-            key = (info["query_idx"], info["aid"])
-            if key not in passage_scores or score > passage_scores[key]:
-                passage_scores[key] = score
+            if not cross_encoder_inputs:
+                return [[] for _ in queries]
 
-        query_to_results = {i: [] for i in range(len(queries))}
-        for (query_idx, aid), score in passage_scores.items():
-            query_to_results[query_idx].append((aid, score))
+            # TOI UU: Batch processing voi ensemble
+            all_ensemble_scores = []
+            batch_size = config.CROSS_ENCODER_BATCH_SIZE
 
-        reranker_aids_batch = []
-        for i in range(len(queries)):
-            results = sorted(query_to_results[i], key=lambda x: x[1], reverse=True)
-            reranker_aids_batch.append([aid for aid, score in results])
+            with torch.no_grad():
+                for i in range(0, len(cross_encoder_inputs), batch_size):
+                    batch_inputs = cross_encoder_inputs[i : i + batch_size]
 
-        return reranker_aids_batch
+                    batch_scores = []
 
-    def retrieve(self, query: str, top_k: int):
-        """Chi thuc hien Tang 1: Retrieval."""
+                    # Get scores from each model in ensemble
+                    for model_idx, (tokenizer, model) in enumerate(
+                        zip(self.cross_encoder_tokenizers, self.cross_encoders)
+                    ):
+                        try:
+                            # OPTIMIZED TOKENIZATION: Use return_tensors=None for better compatibility
+                            tokenized = tokenizer(
+                                batch_inputs,
+                                padding=True,
+                                truncation=True,
+                                max_length=chunk_size,
+                                return_tensors=None,  # Changed from "pt" to None for better compatibility
+                            )
+
+                            # Convert to tensors manually for better control
+                            for key in tokenized:
+                                if isinstance(tokenized[key], list):
+                                    tokenized[key] = torch.tensor(tokenized[key])
+
+                            # Move to device with error handling
+                            try:
+                                tokenized = {
+                                    k: v.to(self.device) for k, v in tokenized.items()
+                                }
+                            except RuntimeError as e:
+                                if "CUDA" in str(e):
+                                    logger.warning(
+                                        f"CUDA error in batch {i//config.CROSS_ENCODER_BATCH_SIZE}, using CPU"
+                                    )
+                                    tokenized = {
+                                        k: v.to("cpu") for k, v in tokenized.items()
+                                    }
+                                else:
+                                    raise e
+
+                            logits = model(**tokenized).logits
+                            scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
+                            batch_scores.append(scores)
+
+                            # TOI UU: Clear memory
+                            del tokenized, logits
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+
+                        except Exception as e:
+                            logger.error(
+                                f"Loi khi xu ly batch {i//config.CROSS_ENCODER_BATCH_SIZE} voi model {model_idx}: {e}"
+                            )
+                            # Them scores mac dinh cho batch nay
+                            batch_scores.append([0.0] * len(batch_inputs))
+
+                    # Combine scores from ensemble models (average)
+                    if batch_scores:
+                        ensemble_scores = []
+                        for score_idx in range(len(batch_scores[0])):
+                            model_scores = [
+                                scores[score_idx]
+                                for scores in batch_scores
+                                if score_idx < len(scores)
+                            ]
+                            if model_scores:
+                                ensemble_score = sum(model_scores) / len(model_scores)
+                                ensemble_scores.append(ensemble_score)
+                            else:
+                                ensemble_scores.append(0.0)
+
+                        all_ensemble_scores.extend(ensemble_scores)
+                    else:
+                        # Fallback: add default scores
+                        all_ensemble_scores.extend([0.0] * len(batch_inputs))
+
+            # TOI UU: Efficient score aggregation
+            passage_scores = {}  # Key: (query_idx, aid), Value: max_score
+            for i, score in enumerate(all_ensemble_scores):
+                info = chunk_info_map[i]
+                key = (info["query_idx"], info["aid"])
+                if key not in passage_scores or score > passage_scores[key]:
+                    passage_scores[key] = score
+
+            query_to_results = {i: [] for i in range(len(queries))}
+            for (query_idx, aid), score in passage_scores.items():
+                query_to_results[query_idx].append((aid, score))
+
+            reranker_aids_batch = []
+            for i in range(len(queries)):
+                results = sorted(query_to_results[i], key=lambda x: x[1], reverse=True)
+                reranker_aids_batch.append([aid for aid, score in results])
+
+            return reranker_aids_batch
+
+    def retrieve(self, query: str, top_k: int) -> Tuple[List[str], np.ndarray]:
+        """
+        Chi thuc hien Tang 1: Retrieval.
+        """
         if not self.is_ready:
             logger.error("Pipeline (Tang 1) chua san sang de truy xuat.")
             return [], []
@@ -354,23 +448,24 @@ class LegalQAPipeline:
             f"Tang 1: Dang truy xuat {top_k} ung vien cho query: '{query[:50]}...'"
         )
 
-        # Simple CPU encoding - no device conflicts
-        try:
-            query_embedding = self.bi_encoder.encode(
-                query, convert_to_tensor=True, device="cpu"
-            )
-        except Exception as e:
-            logger.error(f"Error in retrieval encoding: {e}")
-            # Try without device specification as last resort
-            query_embedding = self.bi_encoder.encode(query, convert_to_tensor=True)
+        with self.memory_manager.memory_monitor("Single Retrieval"):
+            # Simple CPU encoding - no device conflicts
+            try:
+                query_embedding = self.bi_encoder.encode(
+                    query, convert_to_tensor=True, device="cpu"
+                )
+            except Exception as e:
+                logger.error(f"Error in retrieval encoding: {e}")
+                # Try without device specification as last resort
+                query_embedding = self.bi_encoder.encode(query, convert_to_tensor=True)
 
-        query_embedding_np = query_embedding.cpu().numpy().reshape(1, -1)
-        faiss.normalize_L2(query_embedding_np)
+            query_embedding_np = query_embedding.cpu().numpy().reshape(1, -1)
+            faiss.normalize_L2(query_embedding_np)
 
-        distances, indices = self.faiss_index.search(query_embedding_np, top_k)
+            distances, indices = self.faiss_index.search(query_embedding_np, top_k)
 
-        retrieved_aids = [self.index_to_aid[i] for i in indices[0]]
-        return retrieved_aids, distances[0]
+            retrieved_aids = [self.index_to_aid[i] for i in indices[0]]
+            return retrieved_aids, distances[0]
 
     def rerank_light(
         self,
@@ -378,7 +473,7 @@ class LegalQAPipeline:
         retrieved_aids: list,
         retrieved_distances: list,
         top_k_light: int = 50,
-    ):
+    ) -> Tuple[List[str], List[float]]:
         """
         Tang 2: Light Re-ranking voi Light Reranker (fast, small Cross-Encoder)
         Loc xuong top_k_light ung vien chat luong nhat tu 500 xuong 50.
@@ -393,90 +488,95 @@ class LegalQAPipeline:
             f"[CASCADED] Tang 2: Light reranking {len(retrieved_aids)} candidates to {top_k_light} with Light Reranker..."
         )
 
-        # Prepare inputs for Light Reranker
-        cross_encoder_inputs = []
-        aid_to_index = {}
+        with self.memory_manager.memory_monitor("Light Reranking"):
+            # Prepare inputs for Light Reranker
+            cross_encoder_inputs = []
+            aid_to_index = {}
 
-        for i, aid in enumerate(retrieved_aids):
-            if aid in self.aid_map:
-                passage = self.aid_map[aid]
-                cross_encoder_inputs.append([query, passage])
-                aid_to_index[aid] = i
+            for i, aid in enumerate(retrieved_aids):
+                if aid in self.aid_map:
+                    passage = self.aid_map[aid]
+                    cross_encoder_inputs.append([query, passage])
+                    aid_to_index[aid] = i
 
-        if not cross_encoder_inputs:
-            return retrieved_aids[:top_k_light], retrieved_distances[:top_k_light]
+            if not cross_encoder_inputs:
+                return retrieved_aids[:top_k_light], retrieved_distances[:top_k_light]
 
-        # Score with Light Reranker
-        light_scores = []
-        batch_size = config.LIGHT_RERANKER_BATCH_SIZE  # Use config parameter
+            # Score with Light Reranker
+            light_scores = []
+            batch_size = config.LIGHT_RERANKER_BATCH_SIZE  # Use config parameter
 
-        with torch.no_grad():
-            for i in range(0, len(cross_encoder_inputs), batch_size):
-                batch_inputs = cross_encoder_inputs[i : i + batch_size]
+            with torch.no_grad():
+                for i in range(0, len(cross_encoder_inputs), batch_size):
+                    batch_inputs = cross_encoder_inputs[i : i + batch_size]
 
-                try:
-                    # Tokenize with Light Reranker
-                    tokenized = self.light_reranker_tokenizer(
-                        batch_inputs,
-                        padding=True,
-                        truncation=True,
-                        max_length=config.LIGHT_RERANKER_MAX_LENGTH,  # Use config parameter
-                        return_tensors=None,  # Avoid tuple index error
+                    try:
+                        # Tokenize with Light Reranker
+                        tokenized = self.light_reranker_tokenizer(
+                            batch_inputs,
+                            padding=True,
+                            truncation=True,
+                            max_length=config.LIGHT_RERANKER_MAX_LENGTH,  # Use config parameter
+                            return_tensors=None,  # Avoid tuple index error
+                        )
+
+                        # Convert to tensors manually
+                        for key in tokenized:
+                            if isinstance(tokenized[key], list):
+                                tokenized[key] = torch.tensor(tokenized[key])
+
+                        # Move to device
+                        tokenized = {k: v.to(self.device) for k, v in tokenized.items()}
+
+                        # Get scores
+                        logits = self.light_reranker_model(**tokenized).logits
+                        scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
+                        light_scores.extend(scores)
+
+                        # Clear memory
+                        del tokenized, logits
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                    except Exception as e:
+                        logger.error(
+                            f"[CASCADED] Error in light reranking batch {i//batch_size}: {e}"
+                        )
+                        # Add default scores for this batch
+                        light_scores.extend([0.0] * len(batch_inputs))
+
+            # Combine light scores with retrieval scores
+            combined_scores = []
+            for i, aid in enumerate(retrieved_aids):
+                if aid in aid_to_index:
+                    light_score = light_scores[aid_to_index[aid]]
+                    retrieval_score = 1.0 - float(
+                        retrieved_distances[i]
+                    )  # Convert distance to score
+                    # Weighted combination using config parameters
+                    combined_score = (
+                        config.LIGHT_RERANKING_WEIGHT * light_score
+                        + config.RETRIEVAL_SCORE_WEIGHT * retrieval_score
                     )
-
-                    # Convert to tensors manually
-                    for key in tokenized:
-                        if isinstance(tokenized[key], list):
-                            tokenized[key] = torch.tensor(tokenized[key])
-
-                    # Move to device
-                    tokenized = {k: v.to(self.device) for k, v in tokenized.items()}
-
-                    # Get scores
-                    logits = self.light_reranker_model(**tokenized).logits
-                    scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
-                    light_scores.extend(scores)
-
-                    # Clear memory
-                    del tokenized, logits
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-
-                except Exception as e:
-                    logger.error(
-                        f"[CASCADED] Error in light reranking batch {i//batch_size}: {e}"
+                    combined_scores.append(
+                        (aid, combined_score, retrieved_distances[i])
                     )
-                    # Add default scores for this batch
-                    light_scores.extend([0.0] * len(batch_inputs))
+                else:
+                    combined_scores.append((aid, 0.0, retrieved_distances[i]))
 
-        # Combine light scores with retrieval scores
-        combined_scores = []
-        for i, aid in enumerate(retrieved_aids):
-            if aid in aid_to_index:
-                light_score = light_scores[aid_to_index[aid]]
-                retrieval_score = 1.0 - float(
-                    retrieved_distances[i]
-                )  # Convert distance to score
-                # Weighted combination using config parameters
-                combined_score = (
-                    config.LIGHT_RERANKING_WEIGHT * light_score
-                    + config.RETRIEVAL_SCORE_WEIGHT * retrieval_score
-                )
-                combined_scores.append((aid, combined_score, retrieved_distances[i]))
-            else:
-                combined_scores.append((aid, 0.0, retrieved_distances[i]))
+            # Sort by combined score and return top_k_light
+            combined_scores.sort(key=lambda x: x[1], reverse=True)
+            top_aids = [item[0] for item in combined_scores[:top_k_light]]
+            top_distances = [item[2] for item in combined_scores[:top_k_light]]
 
-        # Sort by combined score and return top_k_light
-        combined_scores.sort(key=lambda x: x[1], reverse=True)
-        top_aids = [item[0] for item in combined_scores[:top_k_light]]
-        top_distances = [item[2] for item in combined_scores[:top_k_light]]
+            logger.debug(
+                f"[CASCADED] Light reranking completed: {len(top_aids)} candidates selected"
+            )
+            return top_aids, top_distances
 
-        logger.debug(
-            f"[CASCADED] Light reranking completed: {len(top_aids)} candidates selected"
-        )
-        return top_aids, top_distances
-
-    def rerank(self, query: str, retrieved_aids: list, retrieved_distances: list):
+    def rerank(
+        self, query: str, retrieved_aids: list, retrieved_distances: list
+    ) -> List[Dict[str, Any]]:
         """
         Chi thuc hien Tang 2: Re-ranking, voi ho tro ensemble va chunking cho cac van ban dai.
         """
@@ -488,152 +588,156 @@ class LegalQAPipeline:
             f"Tang 2: Dang xep hang lai {len(retrieved_aids)} ung vien cho query '{query[:50]}...' voi ensemble..."
         )
 
-        chunk_size = config.CROSS_ENCODER_MAX_LENGTH
-        overlap = 50  # So luong token goi len nhau giua cac chunk
+        with self.memory_manager.memory_monitor("Strong Reranking"):
+            chunk_size = config.CROSS_ENCODER_MAX_LENGTH
+            overlap = 50  # So luong token goi len nhau giua cac chunk
 
-        cross_encoder_inputs = []  # List cac cap [query, chunk_text]
-        chunk_info_map = []  # Map tu index cua chunk ve aid goc
-        original_passages = {}  # Map tu aid ve noi dung goc
-        retrieval_scores_map = {}  # Map tu aid ve diem retrieval
+            cross_encoder_inputs = []  # List cac cap [query, chunk_text]
+            chunk_info_map = []  # Map tu index cua chunk ve aid goc
+            original_passages = {}  # Map tu aid ve noi dung goc
+            retrieval_scores_map = {}  # Map tu aid ve diem retrieval
 
-        # 1. Chia van ban thanh cac chunk
-        for i, aid in enumerate(retrieved_aids):
-            if aid in self.aid_map:
-                passage = self.aid_map[aid]
-                original_passages[aid] = passage
-                retrieval_scores_map[aid] = float(retrieved_distances[i])
+            # 1. Chia van ban thanh cac chunk
+            for i, aid in enumerate(retrieved_aids):
+                if aid in self.aid_map:
+                    passage = self.aid_map[aid]
+                    original_passages[aid] = passage
+                    retrieval_scores_map[aid] = float(retrieved_distances[i])
 
-                # Use first tokenizer for chunking
-                passage_tokens = self.cross_encoder_tokenizers[0].encode(
-                    passage, add_special_tokens=False
-                )
+                    # Use first tokenizer for chunking
+                    passage_tokens = self.cross_encoder_tokenizers[0].encode(
+                        passage, add_special_tokens=False
+                    )
 
-                if len(passage_tokens) <= chunk_size:
-                    cross_encoder_inputs.append([query, passage])
-                    chunk_info_map.append({"aid": aid})
-                else:
-                    for j in range(0, len(passage_tokens), chunk_size - overlap):
-                        chunk_token_ids = passage_tokens[j : j + chunk_size]
-                        chunk_text = self.cross_encoder_tokenizers[0].decode(
-                            chunk_token_ids
-                        )
-                        cross_encoder_inputs.append([query, chunk_text])
+                    if len(passage_tokens) <= chunk_size:
+                        cross_encoder_inputs.append([query, passage])
                         chunk_info_map.append({"aid": aid})
+                    else:
+                        for j in range(0, len(passage_tokens), chunk_size - overlap):
+                            chunk_token_ids = passage_tokens[j : j + chunk_size]
+                            chunk_text = self.cross_encoder_tokenizers[0].decode(
+                                chunk_token_ids
+                            )
+                            cross_encoder_inputs.append([query, chunk_text])
+                            chunk_info_map.append({"aid": aid})
 
-        if not cross_encoder_inputs:
-            return []
+            if not cross_encoder_inputs:
+                return []
 
-        # 2. Cham diem cac chunk theo batch voi ensemble
-        all_ensemble_scores = []
+            # 2. Cham diem cac chunk theo batch voi ensemble
+            all_ensemble_scores = []
 
-        with torch.no_grad():
-            for i in range(
-                0, len(cross_encoder_inputs), config.CROSS_ENCODER_BATCH_SIZE
-            ):
-                batch_inputs = cross_encoder_inputs[
-                    i : i + config.CROSS_ENCODER_BATCH_SIZE
-                ]
-
-                batch_scores = []
-
-                # Get scores from each model in ensemble
-                for model_idx, (tokenizer, model) in enumerate(
-                    zip(self.cross_encoder_tokenizers, self.cross_encoders)
+            with torch.no_grad():
+                for i in range(
+                    0, len(cross_encoder_inputs), config.CROSS_ENCODER_BATCH_SIZE
                 ):
-                    try:
-                        # OPTIMIZED TOKENIZATION: Use return_tensors=None for better compatibility
-                        tokenized = tokenizer(
-                            batch_inputs,
-                            padding=True,
-                            truncation=True,
-                            max_length=chunk_size,
-                            return_tensors=None,  # Changed from "pt" to None for better compatibility
-                        )
+                    batch_inputs = cross_encoder_inputs[
+                        i : i + config.CROSS_ENCODER_BATCH_SIZE
+                    ]
 
-                        # Convert to tensors manually for better control
-                        for key in tokenized:
-                            if isinstance(tokenized[key], list):
-                                tokenized[key] = torch.tensor(tokenized[key])
+                    batch_scores = []
 
-                        # CPU processing - no device conflicts
-                        tokenized = {k: v.to("cpu") for k, v in tokenized.items()}
-                        logits = model(**tokenized).logits
-                        scores = torch.softmax(logits, dim=1)[:, 1].tolist()
-
-                        batch_scores.append(scores)
-
-                        # Clear memory
-                        del tokenized, logits
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-
-                    except Exception as e:
-                        logger.error(
-                            f"Error processing batch {i//config.CROSS_ENCODER_BATCH_SIZE} with model {model_idx}: {e}"
-                        )
-                        # Add default scores for this batch and continue
+                    # Get scores from each model in ensemble
+                    for model_idx, (tokenizer, model) in enumerate(
+                        zip(self.cross_encoder_tokenizers, self.cross_encoders)
+                    ):
                         try:
-                            batch_scores.append([0.0] * len(batch_inputs))
-                        except:
-                            # Fallback if even this fails
-                            batch_scores.append([0.0])
+                            # OPTIMIZED TOKENIZATION: Use return_tensors=None for better compatibility
+                            tokenized = tokenizer(
+                                batch_inputs,
+                                padding=True,
+                                truncation=True,
+                                max_length=chunk_size,
+                                return_tensors=None,  # Changed from "pt" to None for better compatibility
+                            )
 
-                # Combine scores from ensemble models (average)
-                if batch_scores:
-                    ensemble_scores = []
-                    for score_idx in range(len(batch_scores[0])):
-                        model_scores = [
-                            scores[score_idx]
-                            for scores in batch_scores
-                            if score_idx < len(scores)
-                        ]
-                        if model_scores:
-                            ensemble_score = sum(model_scores) / len(model_scores)
-                            ensemble_scores.append(ensemble_score)
-                        else:
-                            ensemble_scores.append(0.0)
+                            # Convert to tensors manually for better control
+                            for key in tokenized:
+                                if isinstance(tokenized[key], list):
+                                    tokenized[key] = torch.tensor(tokenized[key])
 
-                    all_ensemble_scores.extend(ensemble_scores)
-                else:
-                    # Fallback: add default scores
-                    all_ensemble_scores.extend([0.0] * len(batch_inputs))
+                            # CPU processing - no device conflicts
+                            tokenized = {k: v.to("cpu") for k, v in tokenized.items()}
+                            logits = model(**tokenized).logits
+                            scores = torch.softmax(logits, dim=1)[:, 1].tolist()
 
-        # 3. Tong hop diem: lay diem max cua cac chunk cho moi van ban goc
-        passage_scores = {}  # Key: aid, Value: max_score
-        for i, score in enumerate(all_ensemble_scores):
-            aid = chunk_info_map[i]["aid"]
-            if aid not in passage_scores or score > passage_scores[aid]:
-                passage_scores[aid] = score
+                            batch_scores.append(scores)
 
-        # 4. Tao ket qua cuoi cung voi deduplication
-        results = []
-        seen_contents = set()
+                            # Clear memory
+                            del tokenized, logits
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
 
-        for aid, rerank_score in passage_scores.items():
-            content = original_passages[aid]
+                        except Exception as e:
+                            logger.error(
+                                f"Error processing batch {i//config.CROSS_ENCODER_BATCH_SIZE} with model {model_idx}: {e}"
+                            )
+                            # Add default scores for this batch and continue
+                            try:
+                                batch_scores.append([0.0] * len(batch_inputs))
+                            except:
+                                # Fallback if even this fails
+                                batch_scores.append([0.0])
 
-            # Simple deduplication: check if content is too similar
-            content_normalized = content.lower().strip()
-            is_duplicate = False
+                    # Combine scores from ensemble models (average)
+                    if batch_scores:
+                        ensemble_scores = []
+                        for score_idx in range(len(batch_scores[0])):
+                            model_scores = [
+                                scores[score_idx]
+                                for scores in batch_scores
+                                if score_idx < len(scores)
+                            ]
+                            if model_scores:
+                                ensemble_score = sum(model_scores) / len(model_scores)
+                                ensemble_scores.append(ensemble_score)
+                            else:
+                                ensemble_scores.append(0.0)
 
-            for seen_content in seen_contents:
-                # Check if content is very similar (90% similarity)
-                if self._calculate_similarity(content_normalized, seen_content) > 0.9:
-                    is_duplicate = True
-                    break
+                        all_ensemble_scores.extend(ensemble_scores)
+                    else:
+                        # Fallback: add default scores
+                        all_ensemble_scores.extend([0.0] * len(batch_inputs))
 
-            if not is_duplicate:
-                results.append(
-                    {
-                        "aid": aid,
-                        "content": content,
-                        "retrieval_score": retrieval_scores_map[aid],
-                        "rerank_score": float(rerank_score),
-                    }
-                )
-                seen_contents.add(content_normalized)
+            # 3. Tong hop diem: lay diem max cua cac chunk cho moi van ban goc
+            passage_scores = {}  # Key: aid, Value: max_score
+            for i, score in enumerate(all_ensemble_scores):
+                aid = chunk_info_map[i]["aid"]
+                if aid not in passage_scores or score > passage_scores[aid]:
+                    passage_scores[aid] = score
 
-        return sorted(results, key=lambda x: x["rerank_score"], reverse=True)
+            # 4. Tao ket qua cuoi cung voi deduplication
+            results = []
+            seen_contents = set()
+
+            for aid, rerank_score in passage_scores.items():
+                content = original_passages[aid]
+
+                # Simple deduplication: check if content is too similar
+                content_normalized = content.lower().strip()
+                is_duplicate = False
+
+                for seen_content in seen_contents:
+                    # Check if content is very similar (90% similarity)
+                    if (
+                        self._calculate_similarity(content_normalized, seen_content)
+                        > 0.9
+                    ):
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    results.append(
+                        {
+                            "aid": aid,
+                            "content": content,
+                            "retrieval_score": retrieval_scores_map[aid],
+                            "rerank_score": float(rerank_score),
+                        }
+                    )
+                    seen_contents.add(content_normalized)
+
+            return sorted(results, key=lambda x: x["rerank_score"], reverse=True)
 
     def _calculate_similarity(self, text1: str, text2: str) -> float:
         """Calculate similarity between two texts using simple character-based approach"""
@@ -652,50 +756,89 @@ class LegalQAPipeline:
 
         return len(intersection) / len(union) if union else 0.0
 
-    def predict(self, query: str, top_k_retrieval: int, top_k_final: int):
+    def predict(
+        self,
+        query: str,
+        top_k_retrieval: int,
+        top_k_final: int,
+        top_k_light_reranking: int = None,
+    ) -> List[Dict[str, Any]]:
         """
         Thuc hien quy trinh Cascaded Reranking: 3 tang de tim cau tra loi.
-        Tang 1: Bi-Encoder retrieval (500 candidates)
-        Tang 2: Light Reranker light reranking (50 candidates)
-        Tang 3: Ensemble strong reranking (5 final results)
+        Tang 1: Bi-Encoder retrieval (candidates)
+        Tang 2: Light Reranker light reranking (candidates)
+        Tang 3: Ensemble strong reranking (final results)
         """
-        # Tang 1: Retrieval
-        retrieved_aids, retrieved_distances = self.retrieve(query, top_k_retrieval)
+        try:
+            # Tang 1: Retrieval
+            retrieved_aids, retrieved_distances = self.retrieve(query, top_k_retrieval)
 
-        if not retrieved_aids:
+            if not retrieved_aids:
+                return []
+
+            # LUU LAI KET QUA TANG 1 (CHO VIEC DANH GIA)
+            self.last_retrieved_results = [
+                {"aid": aid, "retrieval_score": float(score)}
+                for aid, score in zip(retrieved_aids, retrieved_distances)
+            ]
+
+            # Tang 2: Light Reranking (nếu có Cascaded Reranking)
+            if self.use_cascaded_reranking and self.light_reranker_model is not None:
+                # Sử dụng tham số được truyền vào hoặc giá trị mặc định từ config
+                light_reranking_k = (
+                    top_k_light_reranking
+                    if top_k_light_reranking is not None
+                    else config.TOP_K_LIGHT_RERANKING
+                )
+
+                logger.info(
+                    f"[CASCADED] Tang 2: Light reranking {len(retrieved_aids)} -> {light_reranking_k} candidates"
+                )
+                light_aids, light_distances = self.rerank_light(
+                    query,
+                    retrieved_aids,
+                    retrieved_distances,
+                    top_k_light=light_reranking_k,
+                )
+                retrieved_aids = light_aids
+                retrieved_distances = light_distances
+            else:
+                logger.info(
+                    "[CASCADED] Skipping light reranking, using original candidates"
+                )
+
+            # Tang 3: Strong Reranking (Ensemble)
+            reranked_results = self.rerank(query, retrieved_aids, retrieved_distances)
+
+            logger.info(
+                f"[CASCADED] Du doan hoan thanh. Tra ve {min(top_k_final, len(reranked_results))} ket qua."
+            )
+            return reranked_results[:top_k_final]
+
+        except Exception as e:
+            logger.error(f"Error in prediction pipeline: {e}")
             return []
 
-        # LUU LAI KET QUA TANG 1 (CHO VIEC DANH GIA)
-        self.last_retrieved_results = [
-            {"aid": aid, "retrieval_score": float(score)}
-            for aid, score in zip(retrieved_aids, retrieved_distances)
-        ]
+    def cleanup(self):
+        """Clean up resources and free memory"""
+        logger.info("Cleaning up pipeline resources...")
 
-        # Tang 2: Light Reranking (nếu có Cascaded Reranking)
-        if self.use_cascaded_reranking and self.light_reranker_model is not None:
-            logger.info(
-                f"[CASCADED] Tang 2: Light reranking {len(retrieved_aids)} -> {config.TOP_K_LIGHT_RERANKING} candidates"
-            )
-            light_aids, light_distances = self.rerank_light(
-                query,
-                retrieved_aids,
-                retrieved_distances,
-                top_k_light=config.TOP_K_LIGHT_RERANKING,
-            )
-            retrieved_aids = light_aids
-            retrieved_distances = light_distances
-        else:
-            logger.info(
-                "[CASCADED] Skipping light reranking, using original candidates"
-            )
+        # Clear model references
+        if hasattr(self, "bi_encoder"):
+            del self.bi_encoder
+        if hasattr(self, "cross_encoders"):
+            del self.cross_encoders
+        if hasattr(self, "cross_encoder_tokenizers"):
+            del self.cross_encoder_tokenizers
+        if hasattr(self, "light_reranker_model"):
+            del self.light_reranker_model
+        if hasattr(self, "light_reranker_tokenizer"):
+            del self.light_reranker_tokenizer
 
-        # Tang 3: Strong Reranking (Ensemble)
-        reranked_results = self.rerank(query, retrieved_aids, retrieved_distances)
+        # Force garbage collection
+        self.memory_manager.force_garbage_collection()
 
-        logger.info(
-            f"[CASCADED] Du doan hoan thanh. Tra ve {min(top_k_final, len(reranked_results))} ket qua."
-        )
-        return reranked_results[:top_k_final]
+        logger.info("Pipeline cleanup completed")
 
 
 def main_test():
@@ -705,17 +848,25 @@ def main_test():
     if pipeline.is_ready:
         test_query = "Nguoi lao dong co duoc nghi nhung ngay nao?"
         logger.info(f"\nBat dau truy van voi cau hoi: '{test_query}'")
-        final_results = pipeline.predict(
-            test_query,
-            top_k_retrieval=config.TOP_K_RETRIEVAL,
-            top_k_final=config.TOP_K_FINAL,
-        )
 
-        print("\n--- KET QUA CUOI CUNG ---")
-        for res in final_results:
-            print(f"AID: {res['aid']} | Re-rank Score: {res['rerank_score']:.4f}")
-            print(f"Content: {res['content'][:300]}...")
-            print("-" * 20)
+        try:
+            final_results = pipeline.predict(
+                test_query,
+                top_k_retrieval=config.TOP_K_RETRIEVAL,
+                top_k_final=config.TOP_K_FINAL,
+                top_k_light_reranking=config.TOP_K_LIGHT_RERANKING,
+            )
+
+            print("\n--- KET QUA CUOI CUNG ---")
+            for res in final_results:
+                print(f"AID: {res['aid']} | Re-rank Score: {res['rerank_score']:.4f}")
+                print(f"Content: {res['content'][:300]}...")
+                print("-" * 20)
+
+        except Exception as e:
+            logger.error(f"Error in test: {e}")
+        finally:
+            pipeline.cleanup()
 
 
 if __name__ == "__main__":

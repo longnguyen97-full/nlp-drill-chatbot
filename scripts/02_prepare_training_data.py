@@ -187,10 +187,47 @@ def find_hard_negatives(
         f"[HARD_NEG] Creating optimized embeddings for all {len(all_contents)} legal articles..."
     )
 
-    # OPTIMIZATION: Use larger batch size for better GPU utilization
-    embeddings = model.encode(
-        all_contents, show_progress_bar=True, batch_size=128, convert_to_numpy=True
+    # OPTIMIZATION: Adaptive batch sizing based on memory
+    import psutil
+
+    memory = psutil.virtual_memory()
+    available_memory_gb = memory.available / (1024**3)
+
+    # Adaptive batch size based on available memory
+    if available_memory_gb >= 8:
+        batch_size = 128
+    elif available_memory_gb >= 4:
+        batch_size = 64
+    else:
+        batch_size = 32
+
+    logger.info(
+        f"[HARD_NEG] Available memory: {available_memory_gb:.1f} GB, using batch size: {batch_size}"
     )
+
+    # Add progress tracking
+    total_batches = (len(all_contents) + batch_size - 1) // batch_size
+    logger.info(f"[HARD_NEG] Processing {total_batches} batches...")
+
+    try:
+        embeddings = model.encode(
+            all_contents,
+            show_progress_bar=True,
+            batch_size=batch_size,
+            convert_to_numpy=True,
+        )
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            logger.warning("[HARD_NEG] Out of memory, reducing batch size...")
+            batch_size = max(8, batch_size // 2)
+            embeddings = model.encode(
+                all_contents,
+                show_progress_bar=True,
+                batch_size=batch_size,
+                convert_to_numpy=True,
+            )
+        else:
+            raise e
 
     dimension = embeddings.shape[1]
     faiss.normalize_L2(embeddings)
@@ -203,9 +240,26 @@ def find_hard_negatives(
     questions = [
         sample["question"] for sample in train_data if sample.get("relevant_aids")
     ]
-    question_embeddings = model.encode(
-        questions, show_progress_bar=True, batch_size=128
+    logger.info(
+        f"[HARD_NEG] Processing {len(questions)} questions for hard negative mining..."
     )
+
+    try:
+        question_embeddings = model.encode(
+            questions, show_progress_bar=True, batch_size=batch_size
+        )
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower():
+            logger.warning(
+                "[HARD_NEG] Out of memory during question encoding, reducing batch size..."
+            )
+            batch_size = max(4, batch_size // 2)
+            question_embeddings = model.encode(
+                questions, show_progress_bar=True, batch_size=batch_size
+            )
+        else:
+            raise e
+
     faiss.normalize_L2(question_embeddings)
 
     # OPTIMIZATION: Increase top-k for better negative mining
@@ -215,6 +269,8 @@ def find_hard_negatives(
     )
 
     sample_idx = 0
+    processed_samples = 0
+
     for i, sample in enumerate(train_data):
         if not sample.get("relevant_aids"):
             continue
@@ -259,6 +315,17 @@ def find_hard_negatives(
                     selected_negatives.add(neg_aid)
                     neg_count += 1
 
+        processed_samples += 1
+        if processed_samples % 100 == 0:
+            logger.info(
+                f"[HARD_NEG] Processed {processed_samples}/{len(train_data)} samples..."
+            )
+
+    # Memory cleanup
+    del embeddings, question_embeddings, index
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     logger.info(
         f"[HARD_NEG] Found {len(hard_negatives_triplets)} high-quality hard negative triplets."
     )
@@ -266,14 +333,14 @@ def find_hard_negatives(
 
 
 def create_final_dataset(initial_triplets, hard_negatives, train_data, aid_map):
-    """Tạo bộ dữ liệu cuối cùng cho Bi-Encoder và Cross-Encoder."""
-    logger.info("[DATASET] Creating final datasets for Bi-Encoder and Cross-Encoder...")
+    """Tạo bộ dữ liệu cuối cùng cho Bi-Encoder và Cross-Encoder với quality filtering."""
+    logger.info("[DATASET] Creating final datasets with quality filtering...")
 
     # --- Bi-Encoder Dataset ---
     bi_encoder_data = initial_triplets + hard_negatives
     random.shuffle(bi_encoder_data)
 
-    # --- Cross-Encoder Dataset ---
+    # --- Cross-Encoder Dataset với quality filtering ---
     cross_encoder_data = []
     hard_neg_map = {}
     for triplet in hard_negatives:
@@ -283,6 +350,7 @@ def create_final_dataset(initial_triplets, hard_negatives, train_data, aid_map):
         hard_neg_map[q].add(triplet["negative"])
 
     all_aids = set(aid_map.keys())
+    quality_filtered_count = 0
 
     for sample in train_data:
         question = sample["question"]
@@ -290,40 +358,54 @@ def create_final_dataset(initial_triplets, hard_negatives, train_data, aid_map):
         if not relevant_aids:
             continue
 
-        # Positive pairs
+        # Quality filtering for question
+        if len(question.strip()) < 10 or len(question.strip()) > 500:
+            quality_filtered_count += 1
+            continue
+
+        # Positive pairs với quality check
         for aid in relevant_aids:
             if aid in aid_map:
-                cross_encoder_data.append(
-                    {"texts": [question, aid_map[aid]], "label": 1}
-                )
+                content = aid_map[aid]
+                # Quality filtering for content
+                if len(content.strip()) >= 20 and len(content.strip()) <= 3000:
+                    cross_encoder_data.append(
+                        {"texts": [question, content], "label": 1}
+                    )
 
-        # Hard Negative pairs
+        # Hard Negative pairs với quality check
         hard_negs_for_q = {
             aid_map.get(aid) for aid in hard_neg_map.get(question, set())
         }
         for neg_content in hard_negs_for_q:
-            cross_encoder_data.append({"texts": [question, neg_content], "label": 0})
+            if (
+                neg_content
+                and len(neg_content.strip()) >= 20
+                and len(neg_content.strip()) <= 3000
+            ):
+                cross_encoder_data.append(
+                    {"texts": [question, neg_content], "label": 0}
+                )
 
-        # Random Negative pairs
-        num_to_add = (
-            len(relevant_aids)
-            + len(hard_negs_for_q)
-            - len(cross_encoder_data) % (len(relevant_aids) * 2)
-        )
-        negative_pool = list(all_aids - relevant_aids)
+        # Random Negative pairs với quality check
+        num_to_add = max(1, len(relevant_aids) // 2)  # Limit negative samples
+        negative_pool = [aid for aid in all_aids - relevant_aids if aid in aid_map]
         if negative_pool and num_to_add > 0:
             random_negs = random.sample(
                 negative_pool, min(num_to_add, len(negative_pool))
             )
             for neg_aid in random_negs:
-                cross_encoder_data.append(
-                    {"texts": [question, aid_map[neg_aid]], "label": 0}
-                )
+                content = aid_map[neg_aid]
+                if len(content.strip()) >= 20 and len(content.strip()) <= 3000:
+                    cross_encoder_data.append(
+                        {"texts": [question, content], "label": 0}
+                    )
 
     random.shuffle(cross_encoder_data)
 
     logger.info(f"Final Bi-Encoder samples: {len(bi_encoder_data)}")
     logger.info(f"Final Cross-Encoder samples: {len(cross_encoder_data)}")
+    logger.info(f"Quality filtered samples: {quality_filtered_count}")
 
     return bi_encoder_data, cross_encoder_data
 

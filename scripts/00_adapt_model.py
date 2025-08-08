@@ -114,8 +114,8 @@ def prepare_legal_texts(legal_corpus):
 
 
 def create_dapt_dataset(
-    legal_texts, tokenizer, max_length=128
-):  # Further reduced max_length for speed
+    legal_texts, tokenizer, max_length=64
+):  # Further reduced max_length for memory
     """Tao dataset cho DAPT training - OPTIMIZED FOR SPEED"""
     logger.info("[DATASET] Creating DAPT dataset (OPTIMIZED)...")
 
@@ -134,15 +134,17 @@ def create_dapt_dataset(
     )
 
     # Optimize dataset size based on GPU memory
-    optimal_dataset_size = config.DAPT_DATASET_SIZE_LIMIT
+    optimal_dataset_size = min(
+        5000, config.DAPT_DATASET_SIZE_LIMIT
+    )  # Conservative size
     if GPU_AVAILABLE:
         gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
         if gpu_memory_gb >= 8:  # 8GB+ GPU
-            optimal_dataset_size = min(20000, config.DAPT_DATASET_SIZE_LIMIT * 2)
+            optimal_dataset_size = min(10000, config.DAPT_DATASET_SIZE_LIMIT)
         elif gpu_memory_gb >= 4:  # 4-8GB GPU
-            optimal_dataset_size = config.DAPT_DATASET_SIZE_LIMIT
+            optimal_dataset_size = min(5000, config.DAPT_DATASET_SIZE_LIMIT)
         else:  # <4GB GPU
-            optimal_dataset_size = max(5000, config.DAPT_DATASET_SIZE_LIMIT // 2)
+            optimal_dataset_size = max(2000, config.DAPT_DATASET_SIZE_LIMIT // 2)
 
     # Limit dataset size for faster training
     if len(filtered_texts) > optimal_dataset_size:
@@ -183,8 +185,8 @@ def create_dapt_dataset(
     dataset = Dataset.from_dict(dataset_dict)
 
     # Optimize tokenization based on device
-    optimal_batch_size = 500 if GPU_AVAILABLE else 100  # Smaller batch for CPU
-    optimal_num_proc = 4 if GPU_AVAILABLE else 1  # Single process for CPU
+    optimal_batch_size = 200 if GPU_AVAILABLE else 50  # Smaller batch for memory
+    optimal_num_proc = 2 if GPU_AVAILABLE else 1  # Reduced processes for memory
 
     # Tokenize dataset with error handling - OPTIMIZED BATCH SIZE
     try:
@@ -235,16 +237,18 @@ def train_phobert_law(legal_texts, output_path):
         model = AutoModelForMaskedLM.from_pretrained(model_name)
 
         # Optimize batch size based on GPU memory
-        optimal_batch_size = config.BI_ENCODER_BATCH_SIZE
+        optimal_batch_size = min(
+            16, config.BI_ENCODER_BATCH_SIZE
+        )  # Conservative batch size
         if GPU_AVAILABLE:
             gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
             if gpu_memory_gb >= 8:  # 8GB+ GPU
-                optimal_batch_size = min(32, config.BI_ENCODER_BATCH_SIZE * 2)
+                optimal_batch_size = min(16, config.BI_ENCODER_BATCH_SIZE)
                 logger.info(
                     f"[DAPT] High memory GPU detected ({gpu_memory_gb:.1f}GB), using batch size: {optimal_batch_size}"
                 )
             elif gpu_memory_gb >= 4:  # 4-8GB GPU
-                optimal_batch_size = config.BI_ENCODER_BATCH_SIZE
+                optimal_batch_size = min(8, config.BI_ENCODER_BATCH_SIZE)
                 logger.info(
                     f"[DAPT] Medium memory GPU detected ({gpu_memory_gb:.1f}GB), using batch size: {optimal_batch_size}"
                 )
@@ -254,14 +258,17 @@ def train_phobert_law(legal_texts, output_path):
                     f"[DAPT] Low memory GPU detected ({gpu_memory_gb:.1f}GB), using batch size: {optimal_batch_size}"
                 )
         else:
+            optimal_batch_size = max(
+                2, config.BI_ENCODER_BATCH_SIZE // 4
+            )  # Smaller for CPU
             logger.info(f"[DAPT] CPU training, using batch size: {optimal_batch_size}")
 
         # Add padding token if not present
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Create dataset
-        dataset = create_dapt_dataset(legal_texts, tokenizer)
+        # Create dataset with reduced max_length for memory
+        dataset = create_dapt_dataset(legal_texts, tokenizer, max_length=64)
 
         # Split dataset
         dataset_dict = dataset.train_test_split(test_size=0.1)
@@ -277,48 +284,24 @@ def train_phobert_law(legal_texts, output_path):
         training_args = TrainingArguments(
             output_dir=str(output_path),
             overwrite_output_dir=True,
-            num_train_epochs=5,  # Increased for better domain adaptation
+            num_train_epochs=2,  # Reduced for faster training
             per_device_train_batch_size=optimal_batch_size,
             per_device_eval_batch_size=optimal_batch_size,
-            gradient_accumulation_steps=2,  # Optimized for effective batch size
             learning_rate=2e-5,  # Optimized learning rate
-            warmup_ratio=0.1,  # Use ratio for better scheduling
-            weight_decay=0.01,
+            warmup_steps=100,  # Use steps for compatibility
             logging_dir=str(output_path / "logs"),
             logging_steps=25,
             eval_strategy="steps",
             eval_steps=100,  # Regular evaluation
-            save_strategy="steps",
             save_steps=200,  # Save every 200 steps
-            save_total_limit=3,  # Keep 3 best models
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            greater_is_better=False,
             # GPU/CPU OPTIMIZATION
-            fp16=config.FP16_TRAINING and GPU_AVAILABLE,
-            use_cpu=not GPU_AVAILABLE,
+            fp16=config.FP16_TRAINING if GPU_AVAILABLE else False,  # Mixed precision
+            dataloader_pin_memory=True,  # Memory optimization
+            gradient_accumulation_steps=2,  # Effective batch size
             # PERFORMANCE OPTIMIZATIONS
-            dataloader_pin_memory=config.CROSS_ENCODER_DATALOADER_PIN_MEMORY,
-            dataloader_num_workers=(
-                0 if not GPU_AVAILABLE else config.CROSS_ENCODER_DATALOADER_NUM_WORKERS
-            ),
-            dataloader_prefetch_factor=(
-                None
-                if not GPU_AVAILABLE
-                else config.CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR
-            ),
-            remove_unused_columns=True,
-            report_to=None,
-            dataloader_drop_last=True,
-            # ADDITIONAL PERFORMANCE OPTIMIZATIONS
-            gradient_checkpointing=False,
-            optim="adamw_torch",
-            lr_scheduler_type="linear",
-            # Early stopping for better generalization
-            early_stopping_patience=3,
-            early_stopping_threshold=0.001,
-            # Gradient clipping
-            max_grad_norm=1.0,
+            report_to="none",
+            # GRADIENT CLIPPING (compatible with all versions)
+            max_grad_norm=1.0,  # Gradient clipping
         )
 
         # Initialize trainer - Remove deprecated tokenizer parameter
@@ -338,31 +321,49 @@ def train_phobert_law(legal_texts, output_path):
             logger.info(f"[DAPT] Mixed precision (FP16): {config.FP16_TRAINING}")
         else:
             logger.info("[DAPT] Using CPU training (slower but compatible)")
-        trainer.train()
+
+        # Add timeout and error handling for training
+        try:
+            trainer.train()
+        except Exception as e:
+            logger.error(f"[DAPT] Training error: {e}")
+            raise e
 
         # Save model and tokenizer
         logger.info("[DAPT] Saving PhoBERT-Law model...")
-        trainer.save_model()
-        tokenizer.save_pretrained(output_path)
+        try:
+            trainer.save_model()
+            tokenizer.save_pretrained(output_path)
+        except Exception as e:
+            logger.error(f"[DAPT] Error saving model: {e}")
+            raise e
 
         logger.info(f"[DAPT] PhoBERT-Law model saved to: {output_path}")
 
         # Clean up memory
-        del trainer, train_dataset, eval_dataset, model
-        if GPU_AVAILABLE:
-            torch.cuda.empty_cache()
-            logger.info("[DAPT] GPU memory cleared")
+        try:
+            del trainer, train_dataset, eval_dataset, model
+            if GPU_AVAILABLE:
+                torch.cuda.empty_cache()
+                logger.info("[DAPT] GPU memory cleared")
+        except Exception as e:
+            logger.warning(f"[DAPT] Error during cleanup: {e}")
 
         return True
 
     except Exception as e:
         logger.error(f"[DAPT] Error during DAPT training: {e}")
         # Clean up memory even on error
-        if "trainer" in locals():
-            del trainer
-        if GPU_AVAILABLE:
-            torch.cuda.empty_cache()
-            logger.info("[DAPT] GPU memory cleared after error")
+        try:
+            if "trainer" in locals():
+                del trainer
+            if "model" in locals():
+                del model
+            if GPU_AVAILABLE:
+                torch.cuda.empty_cache()
+                logger.info("[DAPT] GPU memory cleared after error")
+        except Exception as e:
+            logger.warning(f"[DAPT] Error during cleanup after error: {e}")
         return False
 
 
@@ -448,7 +449,11 @@ def run_dapt_pipeline():
 
         # Step 5: Validate model
         logger.info("STEP 5: Validating PhoBERT-Law...")
-        validation_success = validate_phobert_law(phobert_law_path)
+        try:
+            validation_success = validate_phobert_law(phobert_law_path)
+        except Exception as e:
+            logger.warning(f"[VALIDATE] Validation error: {e}")
+            validation_success = False
 
         logger.info("=" * 80)
         logger.info("DAPT PIPELINE COMPLETED SUCCESSFULLY!")
@@ -471,6 +476,13 @@ def run_dapt_pipeline():
 
     except Exception as e:
         logger.error(f"Error during DAPT pipeline: {e}")
+        # Clean up memory on pipeline error
+        if GPU_AVAILABLE:
+            try:
+                torch.cuda.empty_cache()
+                logger.info("[PIPELINE] GPU memory cleared after pipeline error")
+            except Exception as cleanup_error:
+                logger.warning(f"[PIPELINE] Error during cleanup: {cleanup_error}")
         return False
 
 
@@ -487,19 +499,29 @@ def main():
             f"[DEVICE] Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
         )
 
-    success = run_dapt_pipeline()
+    try:
+        success = run_dapt_pipeline()
 
-    if success:
-        logger.info("DAPT Pipeline completed successfully!")
-        logger.info("PhoBERT-Law model ready for legal tasks!")
-        if GPU_AVAILABLE:
-            logger.info("GPU acceleration enabled for maximum performance!")
+        if success:
+            logger.info("DAPT Pipeline completed successfully!")
+            logger.info("PhoBERT-Law model ready for legal tasks!")
+            if GPU_AVAILABLE:
+                logger.info("GPU acceleration enabled for maximum performance!")
+            else:
+                logger.info(
+                    "CPU training completed (consider using GPU for faster training)"
+                )
         else:
-            logger.info(
-                "CPU training completed (consider using GPU for faster training)"
-            )
-    else:
-        logger.error("DAPT Pipeline failed!")
+            logger.error("DAPT Pipeline failed!")
+            sys.exit(1)
+    except Exception as e:
+        logger.error(f"Critical error in main: {e}")
+        if GPU_AVAILABLE:
+            try:
+                torch.cuda.empty_cache()
+                logger.info("[MAIN] GPU memory cleared after critical error")
+            except Exception as cleanup_error:
+                logger.warning(f"[MAIN] Error during cleanup: {cleanup_error}")
         sys.exit(1)
 
 

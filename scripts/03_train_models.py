@@ -161,11 +161,29 @@ def train_bi_encoder_optimized(bi_encoder_data):
         model = SentenceTransformer(config.BI_ENCODER_MODEL_NAME)
         train_loss = losses.ContrastiveLoss(model)
 
+        # Adaptive batch sizing based on memory
+        import psutil
+
+        memory = psutil.virtual_memory()
+        available_memory_gb = memory.available / (1024**3)
+
+        # Adaptive batch size
+        if available_memory_gb >= 8:
+            batch_size = config.BI_ENCODER_BATCH_SIZE
+        elif available_memory_gb >= 4:
+            batch_size = max(16, config.BI_ENCODER_BATCH_SIZE // 2)
+        else:
+            batch_size = max(8, config.BI_ENCODER_BATCH_SIZE // 4)
+
+        logger.info(
+            f"[BI-ENCODER] Available memory: {available_memory_gb:.1f} GB, using batch size: {batch_size}"
+        )
+
         num_workers = 0 if os.name == "nt" else config.BI_ENCODER_DATALOADER_NUM_WORKERS
         train_dataloader = DataLoader(
             train_examples,
             shuffle=True,
-            batch_size=config.BI_ENCODER_BATCH_SIZE,
+            batch_size=batch_size,
             num_workers=num_workers,
         )
 
@@ -177,29 +195,32 @@ def train_bi_encoder_optimized(bi_encoder_data):
             else None
         )
 
+        # Note: EmbeddingSimilarityEvaluator, SentenceTransformer, InputExample, losses already imported at top
+
+        # Memory monitoring
+        if torch.cuda.is_available():
+            initial_memory = torch.cuda.memory_allocated() / 1024**3
+            logger.info(f"[BI-ENCODER] Initial GPU memory: {initial_memory:.2f} GB")
+
         model.fit(
             train_objectives=[(train_dataloader, train_loss)],
             epochs=5,  # Increased for better learning
-            warmup_ratio=0.1,  # Use ratio for better scheduling
+            warmup_steps=100,  # Use steps for compatibility
             optimizer_params={
                 "lr": 2e-5,  # Optimized learning rate
                 "eps": 1e-6,
-                "correct_bias": False,
             },
-            evaluation_steps=100,  # Regular evaluation
             evaluator=evaluator,
             output_path=str(config.BI_ENCODER_PATH),
-            save_best_model=bool(evaluator),
-            checkpoint_path=str(config.BI_ENCODER_PATH / "checkpoints"),
-            checkpoint_save_steps=200,  # Save every 200 steps
-            checkpoint_save_total_limit=3,  # Keep 3 best models
-            show_progress_bar=True,
             # Additional optimizations
-            weight_decay=0.01,  # Regularization
-            scheduler="WarmupLinear",  # Better learning rate scheduling
-            use_amp=True,  # Mixed precision training
-            max_grad_norm=1.0,  # Gradient clipping
+            show_progress_bar=True,
         )
+
+        # Memory cleanup
+        if torch.cuda.is_available():
+            final_memory = torch.cuda.memory_allocated() / 1024**3
+            logger.info(f"[BI-ENCODER] Final GPU memory: {final_memory:.2f} GB")
+            torch.cuda.empty_cache()
 
         model.save(str(config.BI_ENCODER_PATH))
         logger.info(
@@ -209,6 +230,9 @@ def train_bi_encoder_optimized(bi_encoder_data):
 
     except Exception as e:
         logger.error(f"[BI-ENCODER] Training failed: {e}", exc_info=True)
+        # Cleanup on error
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return None
 
 
@@ -229,7 +253,6 @@ def build_faiss_index_optimized(model):
         logger.info(f"[FAISS] Encoding {len(documents)} documents...")
         embeddings = model.encode(
             documents,
-            show_progress_bar=True,
             batch_size=config.BI_ENCODER_BATCH_SIZE
             * 2,  # Increase batch size for inference
             convert_to_numpy=True,
@@ -302,13 +325,68 @@ def _train_reranker(
             model.resize_token_embeddings(len(tokenizer))
 
         def preprocess_function(examples):
-            return tokenizer(
-                examples["text1"],
-                examples["text2"],
-                truncation="longest_first",
-                padding="max_length",
-                max_length=max_length,
-            )
+            # Enhanced data cleaning and validation
+            try:
+                cleaned_text1 = []
+                cleaned_text2 = []
+
+                for text1, text2 in zip(examples["text1"], examples["text2"]):
+                    # Enhanced cleaning with more aggressive filtering
+                    import re
+                    
+                    # Remove ALL problematic characters including unicode
+                    text1_clean = re.sub(r'[^\w\s\u00C0-\u1EF9]+', ' ', str(text1)).strip()
+                    text2_clean = re.sub(r'[^\w\s\u00C0-\u1EF9]+', ' ', str(text2)).strip()
+                    
+                    # Remove extra whitespace
+                    text1_clean = re.sub(r'\s+', ' ', text1_clean).strip()
+                    text2_clean = re.sub(r'\s+', ' ', text2_clean).strip()
+                    
+                    # Ensure minimum and maximum length
+                    if not text1_clean or len(text1_clean) < 3:
+                        text1_clean = "text"
+                    if not text2_clean or len(text2_clean) < 3:
+                        text2_clean = "text"
+                    
+                    # Strict length limits
+                    text1_clean = text1_clean[:max_length//2]
+                    text2_clean = text2_clean[:max_length//2]
+                    
+                    cleaned_text1.append(text1_clean)
+                    cleaned_text2.append(text2_clean)
+
+                # Tokenize with strict error handling
+                result = tokenizer(
+                    cleaned_text1,
+                    cleaned_text2,
+                    truncation=True,
+                    padding="max_length",
+                    max_length=max_length,
+                    return_tensors=None,
+                )
+
+                # Strict token ID validation
+                vocab_size = len(tokenizer)
+                unk_id = tokenizer.unk_token_id if tokenizer.unk_token_id is not None else 0
+                
+                for key in ["input_ids", "attention_mask"]:
+                    if key in result:
+                        for i, ids in enumerate(result[key]):
+                            # Replace ALL invalid tokens with UNK
+                            result[key][i] = [
+                                unk_id if token_id >= vocab_size or token_id < 0 else token_id
+                                for token_id in ids
+                            ]
+
+                return result
+            except Exception as e:
+                logger.error(f"[{model_log_name}] Critical preprocessing error: {e}")
+                # Return safe fallback
+                return {
+                    "input_ids": [[tokenizer.cls_token_id] + [unk_id] * (max_length-2) + [tokenizer.sep_token_id]],
+                    "attention_mask": [[1] * max_length],
+                    "labels": [0]
+                }
 
         dataset_splits = training_data.train_test_split(test_size=0.1, seed=42)
         train_dataset = dataset_splits["train"].map(preprocess_function, batched=True)
@@ -324,8 +402,56 @@ def _train_reranker(
             },
         )
 
+        # Set environment variables to help with CUDA debugging
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-        trainer.train()
+        os.environ["TORCH_USE_CUDA_DSA"] = "1"
+
+        # Memory cleanup before training
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info(
+                f"[{model_log_name}] GPU memory before training: {torch.cuda.memory_allocated() / 1024**3:.2f} GB"
+            )
+
+        try:
+            trainer.train()
+        except RuntimeError as e:
+            if "CUDA" in str(e) or "out of memory" in str(e).lower():
+                logger.error(f"[{model_log_name}] CUDA/Memory error during training: {e}")
+                
+                # Try with reduced batch size first
+                logger.info(f"[{model_log_name}] Attempting with reduced batch size...")
+                training_args.per_device_train_batch_size = max(1, training_args.per_device_train_batch_size // 2)
+                training_args.per_device_eval_batch_size = max(1, training_args.per_device_eval_batch_size // 2)
+                
+                trainer = Trainer(
+                    model=model,
+                    args=training_args,
+                    train_dataset=train_dataset,
+                    eval_dataset=eval_dataset,
+                    tokenizer=tokenizer,
+                )
+                
+                try:
+                    trainer.train()
+                except RuntimeError as e2:
+                    logger.error(f"[{model_log_name}] Still failing with reduced batch size: {e2}")
+                    # Final fallback to CPU
+                    logger.info(f"[{model_log_name}] Attempting CPU training...")
+                    training_args.device = torch.device("cpu")
+                    training_args.per_device_train_batch_size = 4
+                    training_args.per_device_eval_batch_size = 4
+                    
+                    trainer = Trainer(
+                        model=model,
+                        args=training_args,
+                        train_dataset=train_dataset,
+                        eval_dataset=eval_dataset,
+                        tokenizer=tokenizer,
+                    )
+                    trainer.train()
+            else:
+                raise
         trainer.save_model()
         tokenizer.save_pretrained(training_args.output_dir)
 
@@ -666,32 +792,21 @@ def main():
             if dataset:
                 args = TrainingArguments(
                     output_dir=str(config.CROSS_ENCODER_PATH),
-                    num_train_epochs=8,  # Increased for better performance
-                    per_device_train_batch_size=16,  # Increased for better gradient estimates
-                    learning_rate=2e-5,  # Optimized learning rate
-                    warmup_ratio=0.1,  # Use ratio for better scheduling
-                    weight_decay=0.01,
-                    eval_strategy="steps",
-                    eval_steps=100,  # Regular evaluation
-                    save_strategy="steps",
-                    save_steps=200,  # Save every 200 steps
-                    load_best_model_at_end=True,
-                    metric_for_best_model="eval_accuracy",
-                    greater_is_better=True,
-                    fp16=torch.cuda.is_available(),
+                    num_train_epochs=config.CROSS_ENCODER_EPOCHS,
+                    per_device_train_batch_size=config.CROSS_ENCODER_BATCH_SIZE,
+                    learning_rate=config.CROSS_ENCODER_LR,
+                    warmup_steps=config.CROSS_ENCODER_WARMUP_RATIO,
+                    eval_steps=config.CROSS_ENCODER_EVAL_STEPS,
+                    save_steps=config.CROSS_ENCODER_EVAL_STEPS * 2,
                     report_to="none",
+                    # Memory optimizations
+                    gradient_checkpointing=True,
+                    dataloader_pin_memory=False,
+                    remove_unused_columns=False,
                     # Additional optimizations
-                    gradient_accumulation_steps=2,  # Effective batch size control
-                    dataloader_num_workers=4,  # Better data loading
-                    dataloader_pin_memory=True,
-                    remove_unused_columns=True,
-                    # Early stopping
-                    early_stopping_patience=3,
-                    early_stopping_threshold=0.001,
-                    # Gradient clipping
-                    max_grad_norm=1.0,
-                    # Learning rate scheduler
-                    lr_scheduler_type="linear",
+                    fp16=config.FP16_TRAINING,
+                    gradient_accumulation_steps=config.CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS,
+                    dataloader_num_workers=config.CROSS_ENCODER_DATALOADER_NUM_WORKERS,
                 )
                 if not _train_reranker(
                     config.CROSS_ENCODER_MODEL_NAME,
@@ -700,12 +815,14 @@ def main():
                     config.CROSS_ENCODER_MAX_LENGTH,
                     "Cross-Encoder",
                 ):
+                    logger.error("Cross-Encoder training failed.")
                     raise RuntimeError("Cross-Encoder training failed.")
                 mark_step_complete(checkpoint_state, "train_cross_encoder")
+            else:
+                logger.error("Failed to prepare Cross-Encoder dataset.")
+                raise RuntimeError("Cross-Encoder dataset preparation failed.")
         else:
-            logger.info(
-                "STEP 3: Cross-Encoder Training... [SKIPPED - Already complete]"
-            )
+            logger.info("STEP 3: Cross-Encoder Training... [SKIPPED - Already complete]")
 
         # --- Step 4: Light Reranker Training ---
         if not is_step_complete(checkpoint_state, "train_light_reranker"):
@@ -715,17 +832,16 @@ def main():
                 args = TrainingArguments(
                     output_dir=str(config.LIGHT_RERANKER_PATH),
                     num_train_epochs=2,
-                    per_device_train_batch_size=16,
-                    learning_rate=2e-5,
+                    per_device_train_batch_size=config.LIGHT_RERANKER_BATCH_SIZE,
+                    learning_rate=config.CROSS_ENCODER_LR,
                     warmup_steps=50,
-                    weight_decay=0.01,
-                    eval_strategy="steps",
                     eval_steps=200,
-                    save_strategy="steps",
                     save_steps=200,
-                    load_best_model_at_end=True,
-                    fp16=torch.cuda.is_available(),
                     report_to="none",
+                    # Memory optimizations
+                    gradient_checkpointing=True,
+                    dataloader_pin_memory=False,
+                    remove_unused_columns=False,
                 )
                 if not _train_reranker(
                     config.LIGHT_RERANKER_MODEL_NAME,
@@ -734,25 +850,23 @@ def main():
                     config.LIGHT_RERANKER_MAX_LENGTH,
                     "Light-Reranker",
                 ):
-                    logger.warning(
-                        "Light Reranker training failed, but pipeline continues."
-                    )
+                    logger.error("Light Reranker training failed.")
+                    raise RuntimeError("Light Reranker training failed.")
                 mark_step_complete(checkpoint_state, "train_light_reranker")
+            else:
+                logger.error("Failed to prepare Light Reranker dataset.")
+                raise RuntimeError("Light Reranker dataset preparation failed.")
         else:
-            logger.info(
-                "STEP 4: Light Reranker Training... [SKIPPED - Already complete]"
-            )
+            logger.info("STEP 4: Light Reranker Training... [SKIPPED - Already complete]")
 
-        # --- Step 5: Evaluation ---
+        # --- Step 5: Comprehensive Evaluation ---
         if not is_step_complete(checkpoint_state, "run_evaluation"):
-            logger.info("STEP 5: Final Evaluation...")
+            logger.info("STEP 5: Comprehensive Evaluation...")
             if not run_comprehensive_evaluation():
-                logger.warning(
-                    "Evaluation run failed, but training steps are complete."
-                )
+                logger.warning("Evaluation run failed, but training steps are complete.")
             mark_step_complete(checkpoint_state, "run_evaluation")
         else:
-            logger.info("STEP 5: Final Evaluation... [SKIPPED - Already complete]")
+            logger.info("STEP 5: Comprehensive Evaluation... [SKIPPED - Already complete]")
 
     except Exception as e:
         logger.error(

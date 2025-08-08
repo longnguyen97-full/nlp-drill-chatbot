@@ -46,26 +46,45 @@ def check_environment():
         )
         return False
 
-    # Kiem tra PyTorch
+    # Kiem tra PyTorch với timeout và memory monitoring
     try:
         import torch
+        import signal
+        import psutil
 
         logger.info(f"[OK] PyTorch version: {torch.__version__}")
-        if torch.cuda.is_available():
-            logger.info(f"[OK] CUDA available: {torch.cuda.get_device_name(0)}")
-            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-            logger.info(f"[INFO] GPU Memory: {gpu_memory_gb:.1f} GB")
 
-            if gpu_memory_gb >= 8:
-                logger.info("[OK] GPU memory sufficient for optimal training")
-            elif gpu_memory_gb >= 4:
-                logger.info(
-                    "[WARN] GPU memory moderate (may need to reduce batch size)"
+        # Memory monitoring
+        memory = psutil.virtual_memory()
+        logger.info(
+            f"[INFO] System memory: {memory.total / (1024**3):.1f} GB total, {memory.available / (1024**3):.1f} GB available"
+        )
+
+        # GPU check without timeout (Windows compatible)
+        if torch.cuda.is_available() and not config.FORCE_CPU_MODE:
+            try:
+                logger.info(f"[OK] CUDA available: {torch.cuda.get_device_name(0)}")
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                logger.info(f"[INFO] GPU Memory: {gpu_memory_gb:.1f} GB")
+
+                # Check GPU memory health
+                if gpu_memory_gb >= config.GPU_MEMORY_THRESHOLD_GB:
+                    logger.info("[OK] GPU memory sufficient for optimal training")
+                elif gpu_memory_gb >= 4:
+                    logger.info(
+                        "[WARN] GPU memory moderate (may need to reduce batch size)"
+                    )
+                else:
+                    logger.info("[WARN] GPU memory low (will use smaller batch sizes)")
+            except Exception as e:
+                logger.warning(
+                    f"[WARN] GPU check error: {e}, continuing with CPU fallback"
                 )
-            else:
-                logger.info("[WARN] GPU memory low (will use smaller batch sizes)")
         else:
-            logger.info("[NOTE] CUDA khong kha dung, se su dung CPU")
+            if config.FORCE_CPU_MODE:
+                logger.info("[INFO] Force CPU mode enabled")
+            else:
+                logger.info("[NOTE] CUDA khong kha dung, se su dung CPU")
     except ImportError:
         logger.error("[FAIL] PyTorch chua duoc cai dat")
         return False

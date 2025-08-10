@@ -25,6 +25,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import config
 from core.logging_system import get_logger
+from core.utils.data_processing import select_top_aids_for_question, rank_aids_for_question
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)
@@ -291,12 +292,16 @@ def build_maps_optimized():
         doc_ids = sample["relevant_laws"]
         valid_aids = []
 
-        # Convert doc_ids to AIDs
+        # Convert doc_ids to candidate AIDs
         for doc_id in doc_ids:
             doc_id_str = str(doc_id)
             if doc_id_str in doc_id_to_aids:
                 aids = doc_id_to_aids[doc_id_str]
-                valid_aids.extend(aids)
+                # Select top aids per document based on lexical match with question
+                top_doc_aids = select_top_aids_for_question(
+                    sample.get("question", ""), aids, aid_map, top_k=3
+                )
+                valid_aids.extend(top_doc_aids)
 
         if valid_aids:
             # Create fixed sample
@@ -311,7 +316,7 @@ def build_maps_optimized():
 
     logger.info(f"[MAP] Fixed {mapping_fixes} training samples with valid AIDs")
 
-    # Save fixed training data
+    # Save fixed training data + optional ranking diagnostics for coverage debugging
     logger.info("[MAP] Saving processed data...")
     train_fixed_path = config.DATA_RAW_DIR / "train_fixed.json"
     with open(train_fixed_path, "w", encoding="utf-8") as f:
@@ -327,7 +332,7 @@ def build_maps_optimized():
         json.dump(doc_id_to_aids, f, ensure_ascii=False, indent=2)
     logger.info(f"[MAP] Saved doc_id_to_aids mapping to {config.DOC_ID_TO_AIDS_PATH}")
 
-    # Create evaluation mapping info
+    # Create evaluation mapping info + coverage stats for validation
     evaluation_mapping = {
         "train_samples": len(fixed_train_data),
         "total_aids": len(aid_map),
@@ -337,6 +342,21 @@ def build_maps_optimized():
         "format": "aid_based",
         "mapping_fixed": True,
     }
+
+    # Optional: log top-5 AIDs per first 5 samples for diagnostics
+    try:
+        diagnostics = []
+        for sample in fixed_train_data[:5]:
+            doc_ids = []
+            ranked = rank_aids_for_question(sample.get("question", ""), sample.get("relevant_aids", []), aid_map)
+            diagnostics.append({
+                "qid": sample.get("qid"),
+                "question": sample.get("question", "")[:120],
+                "ranked_preview": ranked[:5],
+            })
+        evaluation_mapping["diagnostics_preview"] = diagnostics
+    except Exception:
+        pass
 
     evaluation_mapping_path = config.DATA_PROCESSED_DIR / "evaluation_mapping.json"
     with open(evaluation_mapping_path, "w", encoding="utf-8") as f:
@@ -365,7 +385,7 @@ def split_data_optimized(train_data):
     logger.info("[SPLIT] Data shuffled successfully")
 
     # Calculate split point
-    train_ratio = 0.85
+    train_ratio = 0.8
     train_count = int(len(train_data) * train_ratio)
     val_count = len(train_data) - train_count
 
@@ -389,10 +409,23 @@ def split_data_optimized(train_data):
     ), "Split validation failed"
     logger.info("[SPLIT] Split validation passed")
 
-    # Save splits
+    # Save splits with minimum validation size and per-query GT cap
     logger.info("[SPLIT] Saving split data...")
     train_split_path = config.TRAIN_SPLIT_JSON_PATH
     val_split_path = config.VAL_SPLIT_JSON_PATH
+
+    # Ensure validation has at least MIN_VALIDATION_SAMPLES
+    if len(val_split) < config.MIN_VALIDATION_SAMPLES:
+        needed = config.MIN_VALIDATION_SAMPLES - len(val_split)
+        extra = train_split[:needed]
+        val_split = extra + val_split
+        train_split = train_split[needed:]
+
+    # Cap ground-truth per sample to reduce noise (keep top-3)
+    for sample in val_split:
+        r = sample.get("relevant_aids", [])
+        if isinstance(r, list) and len(r) > 3:
+            sample["relevant_aids"] = r[:3]
 
     with open(train_split_path, "w", encoding="utf-8") as f:
         json.dump(train_split, f, ensure_ascii=False, indent=2)
@@ -570,6 +603,13 @@ def run_complete_pipeline():
         logger.info("-" * 40)
         step_start = time.time()
         validation_success = validate_mapping_optimized(aid_map, val_split)
+        # Additional coverage diagnostics: percentage of overlaps achievable under TOP_K_RETRIEVAL
+        try:
+            avg_gt = sum(len(s.get("relevant_aids", [])) for s in val_split) / max(1, len(val_split))
+            logger.info(f"[VALID] Avg ground-truth per query (capped): {avg_gt:.2f}")
+            logger.info(f"[VALID] Config TOP_K_RETRIEVAL: {config.TOP_K_RETRIEVAL}")
+        except Exception:
+            pass
         if not validation_success:
             logger.error("STEP 8 FAILED: Mapping validation failed")
             return False

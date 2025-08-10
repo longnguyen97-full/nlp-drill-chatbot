@@ -110,7 +110,7 @@ def create_reranker_preprocess_function(
     tokenizer: PreTrainedTokenizer, max_length: int
 ):
     """
-    Tạo function preprocessing cho Cross-Encoder/Reranker models với enhanced error handling.
+    Tạo function preprocessing cho Cross-Encoder models với enhanced error handling và token overflow prevention.
 
     Args:
         tokenizer: Tokenizer instance
@@ -124,43 +124,59 @@ def create_reranker_preprocess_function(
 
     def preprocess_function(examples):
         """
-        Preprocess function for reranker models with robust error handling.
+        Preprocess function for Cross-Encoder with robust error handling and token overflow prevention.
 
         Args:
-            examples: Dictionary containing 'text1', 'text2', and 'label' keys
+            examples: Dictionary containing 'texts' and 'label' keys
 
         Returns:
             dict: Tokenized inputs with labels
         """
         try:
             # Validate input structure
-            required_keys = ["text1", "text2", "label"]
+            required_keys = ["texts", "label"]
             if not validate_model_inputs(examples, required_keys):
                 raise ModelUtilsError("Invalid input structure")
 
-            # Ensure all inputs are lists of same length
-            text1_list = examples["text1"]
-            text2_list = examples["text2"]
-            label_list = examples["label"]
-
-            # Create combined texts with error handling
+            # Process texts with enhanced cleaning and overflow prevention
             texts = []
-            for q, p in zip(text1_list, text2_list):
+            for i in range(len(examples["texts"])):
                 try:
-                    combined_text = f"{q} [SEP] {p}"
+                    question = examples["texts"][i][0]
+                    answer = examples["texts"][i][1]
+
+                    # Enhanced text cleaning
+                    question = clean_text_for_tokenization(question)
+                    answer = clean_text_for_tokenization(answer)
+
+                    # Dynamic length management to prevent overflow
+                    max_question_len = max_length // 3  # 1/3 for question
+                    max_answer_len = (
+                        max_length - max_question_len - 3
+                    )  # 3 for special tokens
+
+                    # Truncate if necessary
+                    if len(question) > max_question_len:
+                        question = question[:max_question_len]
+                    if len(answer) > max_answer_len:
+                        answer = answer[:max_answer_len]
+
+                    combined_text = f"{question} [SEP] {answer}"
                     texts.append(combined_text)
                 except Exception as e:
-                    logger.warning(f"Error combining text pair: {e}")
+                    logger.warning(f"Error processing text pair {i}: {e}")
                     texts.append("")  # Fallback
 
-            # Tokenize with error handling
-            with model_operation_timer("Tokenization"):
+            # Tokenize with overflow prevention
+            with model_operation_timer("Cross-Encoder Tokenization"):
                 result = tokenizer(
                     texts,
                     padding="max_length",
                     truncation=True,
                     max_length=max_length,
                     return_tensors=None,  # Avoid tuple index error
+                    return_overflowing_tokens=False,  # Prevent overflow warnings
+                    return_special_tokens_mask=True,
                 )
 
             # Manual tensor conversion with error handling
@@ -170,9 +186,9 @@ def create_reranker_preprocess_function(
                 logger.warning(f"Tensor conversion failed, using lists: {tensor_error}")
                 # Keep as lists if tensor conversion fails
 
-            # Add labels - CRITICAL FIX: This was missing!
+            # Add labels with validation
             valid_labels = []
-            for label in label_list:
+            for label in examples["label"]:
                 try:
                     if isinstance(label, (int, float)):
                         valid_labels.append(int(label))
@@ -188,7 +204,7 @@ def create_reranker_preprocess_function(
             return result
 
         except Exception as e:
-            logger.error(f"Preprocessing error: {e}")
+            logger.error(f"Cross-encoder preprocessing error: {e}")
             logger.error(traceback.format_exc())
             # Return empty result to avoid pipeline crash
             return {
@@ -525,3 +541,34 @@ def cleanup_model_resources(model: torch.nn.Module):
 
     except Exception as e:
         logger.error(f"Error cleaning up model resources: {e}")
+
+
+def clean_text_for_tokenization(text: str) -> str:
+    """
+    Clean text for better tokenization and reduce overflow.
+
+    Args:
+        text: Input text to clean
+
+    Returns:
+        Cleaned text
+    """
+    if not text:
+        return ""
+
+    # Remove excessive whitespace
+    text = " ".join(text.split())
+
+    # Remove problematic characters that might cause tokenization issues
+    import re
+
+    text = re.sub(r'[^\w\s\-.,!?;:()[\]{}"\']+', " ", text)
+
+    # Limit consecutive punctuation
+    text = re.sub(r"[.!?]{2,}", ".", text)
+    text = re.sub(r"[,;:]{2,}", ",", text)
+
+    # Remove excessive spaces
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text

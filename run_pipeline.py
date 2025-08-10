@@ -20,9 +20,80 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
 import json
+import os
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent))
+
+# ----------------------------------------------------------------------------
+# Early CLI pre-parse to override performance mode BEFORE importing config
+# ----------------------------------------------------------------------------
+def _apply_mode_from_cli_early():
+    """Parse --mode fast|quality from sys.argv and set env var early.
+
+    This must run before any import/usage of config so that dynamic imports
+    inside config.py pick up the correct performance mode.
+    """
+    try:
+        selected_mode = None
+        # Scan argv for --mode or --mode=...
+        for i, arg in enumerate(sys.argv[1:], start=1):
+            if arg == "--mode" and i + 1 < len(sys.argv):
+                selected_mode = sys.argv[i + 1]
+                break
+            if arg.startswith("--mode="):
+                selected_mode = arg.split("=", 1)[1]
+                break
+
+        if selected_mode:
+            selected_mode = selected_mode.strip().lower()
+            if selected_mode in ("fast", "quality"):
+                os.environ["LAWBOT_PERFORMANCE_MODE"] = selected_mode
+    except Exception:
+        # Fail-safe: do nothing if parsing fails
+        pass
+
+_apply_mode_from_cli_early()
+
+# Import config to get performance mode - always read latest environment variable
+def clear_config_cache():
+    """Clear all config-related module cache to force reload"""
+    modules_to_clear = ['config', 'config_fast', 'config_quality', 'config_base']
+    for module_name in modules_to_clear:
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+
+def get_performance_mode():
+    """Get performance mode from environment variable and force reload config if needed"""
+    # Check environment variable first
+    env_performance_mode = os.getenv("LAWBOT_PERFORMANCE_MODE", "quality")
+    print(f"[CONFIG] Environment variable LAWBOT_PERFORMANCE_MODE={env_performance_mode}")
+    
+    try:
+        # Clear config cache first
+        clear_config_cache()
+        
+        # Import config
+        import config
+        
+        # If environment variable doesn't match config, force reload again
+        if env_performance_mode != config.PERFORMANCE_MODE:
+            print(f"[CONFIG] Environment variable LAWBOT_PERFORMANCE_MODE={env_performance_mode} but config.PERFORMANCE_MODE={config.PERFORMANCE_MODE}")
+            print(f"[CONFIG] Forcing config reload...")
+            
+            # Clear cache again and re-import
+            clear_config_cache()
+            import config
+            print(f"[CONFIG] After force reload - PERFORMANCE_MODE: {config.PERFORMANCE_MODE}")
+        
+        return config.PERFORMANCE_MODE
+    except ImportError:
+        print(f"[CONFIG] Could not import config, using environment variable: {env_performance_mode}")
+        return env_performance_mode
+
+# Get current performance mode
+PERFORMANCE_MODE = get_performance_mode()
+print(f"[CONFIG] Final PERFORMANCE_MODE: {PERFORMANCE_MODE}")
 
 # Import progress utilities
 from core.progress_tracker import ProgressTracker, StepLogger, create_summary_report
@@ -227,7 +298,21 @@ class LegalQAPipeline:
             )
             step_logger.info(f"[BUOC {step_id}] Command: {' '.join(cmd)}")
 
-            # Chay script voi timeout va capture output
+            # Set environment variables to match direct execution
+            env = os.environ.copy()
+            env["PYTHONPATH"] = (
+                str(self.project_root) + os.pathsep + env.get("PYTHONPATH", "")
+            )
+            env["CUDA_LAUNCH_BLOCKING"] = "1"
+            
+            # Always read the latest performance mode from environment variable
+            current_performance_mode = get_performance_mode()
+            env["LAWBOT_PERFORMANCE_MODE"] = current_performance_mode
+            
+            step_logger.info(
+                f"[BUOC {step_id}] [CONFIG] Performance Mode: {current_performance_mode}"
+            )
+
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -235,6 +320,8 @@ class LegalQAPipeline:
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
+                cwd=str(self.project_root),  # Set working directory to project root
+                env=env,  # Use modified environment
             )
 
             # Doc output real-time
@@ -248,8 +335,32 @@ class LegalQAPipeline:
                     output = output.strip()
                     output_lines.append(output)
                     line_count += 1
-                    step_logger.info(
-                        f"[BUOC {step_id}] [LIST] Line {line_count}: {output}"
+                    # Outline-aware landmarks
+                    if "[BI-ENCODER] Starting Bi-Encoder training" in output:
+                        step_logger.func_start("train_bi_encoder_optimized")
+                    if "[FAISS] Building FAISS index" in output:
+                        step_logger.func_start("build_faiss_index_optimized")
+                    if "STEP 3: Cross-Encoder Training" in output:
+                        step_logger.func_start("_train_reranker (Cross-Encoder)")
+                    if "STEP 4: Light Reranker Training" in output:
+                        step_logger.func_start("_train_reranker (Light-Reranker)")
+                    if "STEP 5: Comprehensive Evaluation" in output:
+                        step_logger.func_start("run_comprehensive_evaluation")
+
+                    if "[BI-ENCODER] Training complete." in output:
+                        step_logger.func_end("train_bi_encoder_optimized")
+                    if "[FAISS] Index with" in output and "saved successfully" in output:
+                        step_logger.func_end("build_faiss_index_optimized")
+                    if "[Cross-Encoder] Training complete." in output:
+                        step_logger.func_end("_train_reranker (Cross-Encoder)")
+                    if "[Light Reranker] Training complete." in output:
+                        step_logger.func_end("_train_reranker (Light-Reranker)")
+                    if "📊 COMPREHENSIVE EVALUATION RESULTS:" in output:
+                        step_logger.func_end("run_comprehensive_evaluation")
+
+                    # Stream child output with clear, non-duplicated prefix
+                    step_logger.step_progress(
+                        f"[{script_name}] Line {line_count}: {output}"
                     )
 
             # Lay return code
@@ -330,23 +441,37 @@ class LegalQAPipeline:
         # Tim buoc bat dau
         start_index = 0
         if start_step:
+            step_found = False
             for i, step in enumerate(self.pipeline_steps):
                 if step["id"] == start_step:
                     start_index = i
+                    step_found = True
                     self.logger.info(f"[TARGET] Bat dau tu buoc {start_step}")
                     break
-            else:
+
+            if not step_found:
                 self.logger.error(f"[FAIL] Khong tim thay buoc {start_step}")
+                self.logger.error(
+                    f"[FAIL] Cac buoc co san: {[step['id'] for step in self.pipeline_steps]}"
+                )
                 return False
         else:
             # Tự động tìm bước tiếp theo từ checkpoint
             next_step = get_next_step_to_run(self.checkpoint_state, self.pipeline_steps)
             if next_step:
+                step_found = False
                 for i, step in enumerate(self.pipeline_steps):
                     if step["id"] == next_step:
                         start_index = i
+                        step_found = True
                         self.logger.info(f"[CHECKPOINT] Resuming from step {next_step}")
                         break
+
+                if not step_found:
+                    self.logger.error(
+                        f"[FAIL] Khong tim thay buoc {next_step} trong pipeline"
+                    )
+                    return False
 
         total_steps = len(self.pipeline_steps) - start_index
         pipeline_start_time = time.time()
@@ -480,6 +605,11 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Legal QA Pipeline v8.0")
+    parser.add_argument(
+        "--mode",
+        choices=["fast", "quality"],
+        help="Override performance mode for this run (fast|quality).",
+    )
     parser.add_argument("--start-step", help="Bat dau tu buoc cu the (e.g., 02)")
     parser.add_argument(
         "--skip-filtering", action="store_true", help="Bo qua filtering dataset"
@@ -498,6 +628,10 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Ensure env reflects --mode (redundant safety; early pre-parse already applied)
+    if args.mode:
+        os.environ["LAWBOT_PERFORMANCE_MODE"] = args.mode
 
     # Tao pipeline
     pipeline = LegalQAPipeline(

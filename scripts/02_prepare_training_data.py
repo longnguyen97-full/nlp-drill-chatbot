@@ -35,6 +35,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import config
 from core.logging_system import get_logger
+from core.utils.data_processing import select_top_aids_for_question
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)
@@ -71,9 +72,11 @@ def create_initial_triplets(train_data: List[Dict], aid_map: Dict) -> List[Dict]
         if not question or not relevant_aids:
             continue
 
-        positive_contents = [
-            aid_map.get(aid) for aid in relevant_aids if aid in aid_map
-        ]
+        # Guard: if too many AIDs for a doc, pick top per lexical score to increase quality
+        if len(relevant_aids) > 10:
+            relevant_aids = select_top_aids_for_question(question, list(relevant_aids), aid_map, top_k=5)
+
+        positive_contents = [aid_map.get(aid) for aid in relevant_aids if aid in aid_map]
         negative_aids_pool = [aid for aid in all_aids if aid not in relevant_aids]
 
         if not positive_contents or not negative_aids_pool:
@@ -387,7 +390,7 @@ def create_final_dataset(initial_triplets, hard_negatives, train_data, aid_map):
                     {"texts": [question, neg_content], "label": 0}
                 )
 
-        # Random Negative pairs với quality check
+        # Random Negative pairs với quality check (balance positives)
         num_to_add = max(1, len(relevant_aids) // 2)  # Limit negative samples
         negative_pool = [aid for aid in all_aids - relevant_aids if aid in aid_map]
         if negative_pool and num_to_add > 0:
@@ -400,6 +403,14 @@ def create_final_dataset(initial_triplets, hard_negatives, train_data, aid_map):
                     cross_encoder_data.append(
                         {"texts": [question, content], "label": 0}
                     )
+
+        # Optional: light augmentation on question to increase diversity
+        if len(question) > 10 and len(relevant_aids) > 0:
+            aug_q = question.replace(" như thế nào", " là gì").replace(" gồm những", " bao gồm những")
+            for aid in list(relevant_aids)[:1]:
+                content = aid_map.get(aid)
+                if content and len(content.strip()) >= 20:
+                    cross_encoder_data.append({"texts": [aug_q, content], "label": 1})
 
     random.shuffle(cross_encoder_data)
 

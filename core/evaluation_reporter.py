@@ -234,6 +234,14 @@ class EvaluationReporter:
                 ),
             }
 
+            # Backward-compatible aliases for downstream consumers
+            report["summary"]["tier1_metrics"] = report["summary"][
+                "retrieval_metrics"
+            ]
+            report["summary"]["tier3_metrics"] = report["summary"][
+                "reranking_metrics"
+            ]
+
             return report
 
         except Exception as e:

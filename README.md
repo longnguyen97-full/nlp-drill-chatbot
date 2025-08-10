@@ -94,18 +94,28 @@ pip install -r requirements.txt
 ### **Bước 3: Chạy pipeline huấn luyện**
 
 ```bash
-# Chạy toàn bộ pipeline (khuyến nghị)
-python run_pipeline.py
+# Chạy toàn bộ pipeline với chế độ chất lượng (QUALITY)
+python run_pipeline.py --mode quality
 
-# Chạy nhanh (bỏ qua DAPT)
-python run_pipeline.py --no-dapt
+# Chạy nhanh để kiểm thử (FAST), bỏ qua DAPT
+python run_pipeline.py --mode fast --no-dapt
 
-# Chạy từ bước cụ thể
-python run_pipeline.py --start-step 02
+# Chạy từ bước cụ thể (ví dụ bắt đầu từ bước 03)
+python run_pipeline.py --start-step 03 --mode fast
 
-# Xem danh sách các bước
+# Xem danh sách các bước và trạng thái checkpoint
 python run_pipeline.py --show-steps
+
+# Xoá checkpoint để chạy lại từ đầu
+python run_pipeline.py --clear-checkpoint
 ```
+
+Lưu ý:
+- `--mode fast|quality` ghi đè chế độ hiệu năng chỉ cho lần chạy hiện tại (không cần đổi biến môi trường).
+- Bạn có thể kiểm tra cấu hình hiện tại bằng:
+  ```bash
+  python -c "import config; config.print_config_summary()"
+  ```
 
 ### **Bước 4: Khởi động ứng dụng**
 
@@ -114,6 +124,81 @@ python run_pipeline.py --show-steps
 streamlit run app/app.py
 
 # Truy cập: http://localhost:8501
+```
+
+---
+
+## ⚡ **Chế độ hiệu năng (Performance Modes)**
+
+Hệ thống hỗ trợ 2 chế độ:
+- **FAST**: ưu tiên tốc độ để kiểm thử nhanh (epochs ít, batch nhỏ, eval ít).
+- **QUALITY**: ưu tiên chất lượng mô hình (epochs/batch lớn hơn, eval nhiều hơn).
+
+Có 2 cách chọn chế độ:
+
+1) Ghi đè bằng cờ `--mode` khi chạy pipeline (khuyến nghị)
+```bash
+python run_pipeline.py --mode fast
+python run_pipeline.py --mode quality
+```
+
+2) Dùng script chuyển mode (ảnh hưởng biến môi trường, hữu ích cho các tiến trình mới)
+```bash
+# Chuyển sang FAST cho phiên hiện tại và đặt vĩnh viễn (Windows dùng setx)
+python switch_performance_mode.py fast
+
+# Áp dụng ngay và in tóm tắt cấu hình (không cần mở phiên mới)
+python switch_performance_mode.py fast --immediate
+
+# Xem mode hiện tại
+python switch_performance_mode.py show
+```
+
+Ghi chú Windows:
+- `setx` chỉ áp dụng cho cửa sổ terminal mở sau đó. Nếu không dùng `--immediate`, hãy mở phiên mới hoặc chạy lại với `--mode`.
+- Kiểm tra nhanh: `python -c "import config; config.print_config_summary()"`.
+
+---
+
+## 🧰 **Lệnh thường dùng (Cheat Sheet)**
+
+```bash
+# 1) Kiểm tra cấu hình hiện tại
+python -c "import config; config.print_config_summary()"
+
+# 2) Chạy pipeline nhanh (FAST), bỏ DAPT
+python run_pipeline.py --mode fast --no-dapt
+
+# 3) Chạy đầy đủ chất lượng (QUALITY)
+python run_pipeline.py --mode quality
+
+# 4) Tiếp tục từ checkpoint hoặc chọn bước bắt đầu
+python run_pipeline.py --show-steps
+python run_pipeline.py --start-step 03 --mode fast
+
+# 5) Xoá checkpoint
+python run_pipeline.py --clear-checkpoint
+
+# 6) Chỉ chạy đánh giá (nếu cần riêng)
+python scripts/04_evaluate_models.py --mode fast
+
+# 7) Chuyển chế độ hiệu năng (toàn hệ thống)
+python switch_performance_mode.py fast --immediate
+python switch_performance_mode.py show
+
+# 8) Khởi động ứng dụng web
+streamlit run app/app.py
+
+# 9) Clean
+python scripts/05_cleanup_old_models.py
+# Dry-run kiểm tra trước:
+python scripts/05_cleanup_old_models.py --mode fast --dry-run
+# Xóa sạch artifacts cốt lõi (không hỏi):
+python scripts/05_cleanup_old_models.py --mode fast -y
+# Xóa “sạch sâu” bao gồm processed artifacts, reports, logs:
+python scripts/05_cleanup_old_models.py --mode fast -y --all --include-reports --include-logs
+# Sau khi clean:
+python run_pipeline.py --mode fast --start-step 01 (hoặc --start-step 03 nếu đã có dữ liệu).
 ```
 
 ### **Bước 5: Sử dụng API**
@@ -1416,6 +1501,80 @@ config.PREFETCH_FACTOR = 2
 | **📊 Tổng thời gian phản hồi** | **~550ms** | **Nhanh hơn 10x so với tìm kiếm thủ công** |
 
 ---
+
+## 🧪 Tối ưu theo từng bước & Best Practices (v8.1)
+
+> Tài liệu này tổng hợp các kỹ thuật tối ưu đã triển khai trong source, giúp chạy nhanh hơn, ổn định hơn, và đánh giá có số liệu đầy đủ ở cả FAST/QUALITY.
+
+- **Bước 00 – DAPT (PhoBERT-Law)**
+  - **Tokenizer giảm độ dài mẫu**: `max_length` rút gọn để tránh OOM khi không có GPU mạnh.
+  - **Dataset tạo theo batch nhỏ**: đảm bảo memory footprint thấp, vẫn đủ đa dạng để domain-adapt.
+
+- **Bước 01 – Environment & Data Processing**
+  - **Validation cấu trúc & file bắt buộc**: tự tạo thư mục thiếu; báo lỗi sớm nếu thiếu data.
+  - **Mapping tối ưu**: build `aid_map.pkl`, `doc_id_to_aids_complete.json` để truy xuất nhanh.
+  - **Split dữ liệu hợp lý**: tách train/val với số lượng tối thiểu theo config (tránh val quá nhỏ).
+
+- **Bước 02 – Hard Negative Mining & Chuẩn bị dữ liệu**
+  - **Hard negatives chất lượng**: dùng Bi-Encoder tạm để tìm negatives “khó”, tăng chất lượng Cross-Encoder.
+  - **Augmentation an toàn**: tăng đa dạng câu hỏi nhưng không phá hỏng semantics pháp luật.
+
+- **Bước 03 – Training tích hợp & Evaluation (quan trọng)**
+  - **Override mode sớm**: tất cả script hỗ trợ `--mode fast|quality`, set env trước khi import `config` ⇒ chọn đúng `config_fast.py`/`config_quality.py`.
+  - **TrainingArguments tương thích nhiều version**: dùng builder `build_training_args_compat(...)` chỉ truyền tham số mà transformers hiện tại hỗ trợ; tự đồng bộ evaluation/save strategy để tránh lỗi.
+  - **EarlyStopping an toàn**: chỉ bật khi version hỗ trợ evaluation strategy; tự tắt `load_best_model_at_end` nếu không đồng bộ được.
+  - **Tiền xử lý văn bản chắc chắn**: làm sạch unicode/ký tự lạ, tối thiểu độ dài, cắt đôi theo `max_length // 2` cho cặp query/document.
+  - **Tokenization cặp dài**: `truncation="only_second"` để ưu tiên giữ nguyên truy vấn, giảm warning overflow.
+  - **Stratify hợp lệ**: cố gắng `class_encode_column('label')` rồi `stratify_by_column='label'`; nếu không được thì fallback split ngẫu nhiên.
+  - **Fallback OOM**: tự giảm batch, rồi chuyển CPU nếu cần; dọn bộ nhớ CUDA giữa các lần thử.
+  - **FAISS build chuẩn**: encode toàn bộ corpus với Bi-Encoder đã train; lưu `faiss` + `index_to_aid.json` đồng bộ.
+  - **Evaluation ổn định (tại bước 03)**:
+    - Metrics dạng phẳng: `precision@k`, `recall@k`, `f1@k` (k ∈ {1,3,5,10,20,50}).
+    - Không loại cả batch khi có query trống kết quả; thay vào đó điền 0 cho query đó và vẫn tính metrics tổng.
+
+- **Bước 04 – Evaluate chuyên sâu (độc lập, có report)**
+  - **Override mode sớm**: `python scripts/04_evaluate_models.py --mode fast|quality` để dùng đúng config.
+  - **Kết quả retrieval/reranking**: dùng `BatchEvaluator` và luôn chuẩn hóa output về keys phẳng.
+  - **Per-query analysis**: tính precision/recall/F1 riêng từng câu hỏi; ghi số lượng AID đúng tìm thấy.
+  - **Kiểm tra phủ AID**: thống kê tỉ lệ ground-truth AID có mặt trong `index_to_aid.json` (nếu thấp, rebuild index ở bước 03).
+  - **Báo cáo chuẩn**: `EvaluationReporter.create_comprehensive_report(...)` + `save_report()` vào `reports/` với timestamp.
+
+### FAST vs QUALITY (tóm tắt khác biệt chính)
+
+- **FAST**: epochs thấp, batch nhỏ, `CROSS/LIGHT_MAX_LENGTH≈192`, `TOP_K_RETRIEVAL≈80`, `TOP_K_LIGHT≈40`, `TOP_K_FINAL≈3`, không dùng FP16 (ưu tiên ổn định và tốc độ).
+- **QUALITY**: epochs/batch lớn hơn, `CROSS/LIGHT_MAX_LENGTH≈320`, `TOP_K_RETRIEVAL≈150`, `TOP_K_LIGHT≈80`, `TOP_K_FINAL≈7`, bật FP16 nếu khả dụng (ưu tiên chất lượng).
+
+### Xử lý văn bản dài (Long documents)
+
+- **Chunking theo token** với overlap (~50) và `truncation="only_second"` để giữ nguyên truy vấn.
+- **Gộp điểm thông minh**: lấy max score trên tất cả chunk của một văn bản để đại diện.
+- **Dedup đơn giản**: lọc các kết quả nội dung trùng lặp mức cao để danh sách gọn và đa dạng.
+
+### Logging & Theo dõi tiến trình
+
+- **Outline-aware**: log theo bước/hàm `[STEP {id}] [FUNC] ▶/◀` để dễ theo dõi tiến trình.
+- **Console/file gồm vị trí nguồn**: `[name] [func:line]` giúp truy vết chính xác đoạn code phát log.
+
+### Đảm bảo evaluation có số liệu (checklist nhanh)
+
+- Đã build lại FAISS bằng Bi-Encoder mới chưa? (chạy lại bước 03 hoặc `--start-step 03`).
+- Ground-truth AID có khớp format với `index_to_aid.json`? (xem thống kê phủ AID in ra ở bước 04).
+- K đang dùng có phù hợp? `TOP_K_RETRIEVAL` quá nhỏ dễ bỏ lỡ ground-truth.
+- Đang chạy đúng mode? Dùng `--mode fast|quality` hoặc `switch_performance_mode.py --immediate` trước khi chạy.
+
+### Chạy App theo mode
+
+- Windows (PowerShell):
+  ```powershell
+  setx LAWBOT_PERFORMANCE_MODE fast
+  # Mở terminal mới hoặc:
+  $env:LAWBOT_PERFORMANCE_MODE="fast"; streamlit run app/app.py
+  ```
+- Linux/macOS:
+  ```bash
+  LAWBOT_PERFORMANCE_MODE=fast streamlit run app/app.py
+  ```
+
 
 ## 🛠️ **Phát triển và bảo trì**
 

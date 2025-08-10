@@ -355,47 +355,76 @@ class LegalQAPipeline:
                             tokenized = tokenizer(
                                 batch_inputs,
                                 padding=True,
-                                truncation=True,
+                                truncation="only_second",
                                 max_length=chunk_size,
                                 return_tensors=None,  # Changed from "pt" to None for better compatibility
+                                return_overflowing_tokens=False,  # Prevent overflow warnings
                             )
 
                             # Convert to tensors manually for better control
                             for key in tokenized:
                                 if isinstance(tokenized[key], list):
-                                    tokenized[key] = torch.tensor(tokenized[key])
+                                    # Validate list lengths before conversion
+                                    if len(tokenized[key]) > 0:
+                                        tokenized[key] = torch.tensor(tokenized[key])
+                                    else:
+                                        logger.warning(
+                                            f"Empty tensor list for key {key}, skipping batch"
+                                        )
+                                        continue
 
-                            # Move to device with error handling
-                            try:
-                                tokenized = {
-                                    k: v.to(self.device) for k, v in tokenized.items()
-                                }
-                            except RuntimeError as e:
-                                if "CUDA" in str(e):
-                                    logger.warning(
-                                        f"CUDA error in batch {i//config.CROSS_ENCODER_BATCH_SIZE}, using CPU"
-                                    )
-                                    tokenized = {
-                                        k: v.to("cpu") for k, v in tokenized.items()
-                                    }
-                                else:
-                                    raise e
+                            # Validate tensor shapes before processing
+                            if not all(
+                                len(v) == len(batch_inputs)
+                                for v in tokenized.values()
+                                if isinstance(v, torch.Tensor)
+                            ):
+                                logger.warning(
+                                    f"Tensor shape mismatch in batch {i//config.CROSS_ENCODER_BATCH_SIZE}, skipping"
+                                )
+                                continue
 
-                            logits = model(**tokenized).logits
-                            scores = torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
+                            # CPU processing - no device conflicts
+                            tokenized = {k: v.to("cpu") for k, v in tokenized.items()}
+
+                            # Safe model inference
+                            outputs = model(**tokenized)
+                            if hasattr(outputs, "logits"):
+                                logits = outputs.logits
+                            else:
+                                logits = outputs
+
+                            # Validate logits shape
+                            if logits.shape[0] != len(batch_inputs):
+                                logger.warning(
+                                    f"Logits shape mismatch: expected {len(batch_inputs)}, got {logits.shape[0]}"
+                                )
+                                continue
+
+                            scores = torch.softmax(logits, dim=1)[:, 1].tolist()
+
                             batch_scores.append(scores)
 
-                            # TOI UU: Clear memory
+                            # Clear memory
                             del tokenized, logits
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
 
                         except Exception as e:
                             logger.error(
-                                f"Loi khi xu ly batch {i//config.CROSS_ENCODER_BATCH_SIZE} voi model {model_idx}: {e}"
+                                f"Error processing batch {i//config.CROSS_ENCODER_BATCH_SIZE} with model {model_idx}: {e}"
                             )
-                            # Them scores mac dinh cho batch nay
-                            batch_scores.append([0.0] * len(batch_inputs))
+                            # Add default scores for this batch and continue
+                            try:
+                                # Create default scores with same length as batch
+                                default_scores = [0.5] * len(batch_inputs)
+                                batch_scores.append(default_scores)
+                            except Exception as default_error:
+                                logger.error(
+                                    f"Error creating default scores: {default_error}"
+                                )
+                                # Skip this batch entirely
+                                continue
 
                     # Combine scores from ensemble models (average)
                     if batch_scores:
@@ -646,9 +675,10 @@ class LegalQAPipeline:
                             tokenized = tokenizer(
                                 batch_inputs,
                                 padding=True,
-                                truncation=True,
+                                truncation="only_second",
                                 max_length=chunk_size,
                                 return_tensors=None,  # Changed from "pt" to None for better compatibility
+                                return_overflowing_tokens=False,
                             )
 
                             # Convert to tensors manually for better control

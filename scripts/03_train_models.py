@@ -27,23 +27,102 @@ from transformers import (
     AutoModelForSequenceClassification,
     TrainingArguments,
     Trainer,
+    EarlyStoppingCallback,
 )
 from datasets import Dataset
 import sys
 from datetime import datetime
+import inspect
+
+# --- Early CLI pre-parse to set performance mode before importing config anywhere ---
+def _apply_mode_from_cli_early():
+    try:
+        import sys as _sys
+        import os as _os
+        selected_mode = None
+        for i, arg in enumerate(_sys.argv[1:], start=1):
+            if arg == "--mode" and i + 1 < len(_sys.argv):
+                selected_mode = _sys.argv[i + 1]
+                break
+            if arg.startswith("--mode="):
+                selected_mode = arg.split("=", 1)[1]
+                break
+        if selected_mode:
+            selected_mode = selected_mode.strip().lower()
+            if selected_mode in ("fast", "quality"):
+                _os.environ["LAWBOT_PERFORMANCE_MODE"] = selected_mode
+    except Exception:
+        pass
+
+_apply_mode_from_cli_early()
 
 # --- System Path Setup ---
-sys.path.append(str(Path(__file__).parent.parent))
+# Ensure we can import from project root regardless of how script is called
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# Set working directory to project root
+os.chdir(project_root)
+
+# --- Config Import with Performance Mode Support ---
+def clear_config_cache():
+    """Clear all config-related module cache to force reload"""
+    modules_to_clear = ['config', 'config_fast', 'config_quality', 'config_base']
+    for module_name in modules_to_clear:
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+
+def get_performance_mode():
+    """Get performance mode from environment variable and force reload config if needed"""
+    # Check environment variable first
+    env_performance_mode = os.getenv("LAWBOT_PERFORMANCE_MODE", "quality")
+    print(f"[CONFIG] Environment variable LAWBOT_PERFORMANCE_MODE={env_performance_mode}")
+    
+    try:
+        # Clear config cache first
+        clear_config_cache()
+        
+        # Import config
+        import config
+        
+        # If environment variable doesn't match config, force reload again
+        if env_performance_mode != config.PERFORMANCE_MODE:
+            print(f"[CONFIG] Environment variable LAWBOT_PERFORMANCE_MODE={env_performance_mode} but config.PERFORMANCE_MODE={config.PERFORMANCE_MODE}")
+            print(f"[CONFIG] Forcing config reload...")
+            
+            # Clear cache again and re-import
+            clear_config_cache()
+            import config
+            print(f"[CONFIG] After force reload - PERFORMANCE_MODE: {config.PERFORMANCE_MODE}")
+        
+        return config.PERFORMANCE_MODE
+    except ImportError:
+        print(f"[CONFIG] Could not import config, using environment variable: {env_performance_mode}")
+        return env_performance_mode
+
+# Get current performance mode and import config
+PERFORMANCE_MODE = get_performance_mode()
+print(f"[CONFIG] Final PERFORMANCE_MODE: {PERFORMANCE_MODE}")
+
+# Import config after ensuring correct mode
 import config
+import importlib
 from core.logging_system import get_logger
 from core.pipeline import LegalQAPipeline
 from core.evaluation_reporter import BatchEvaluator, EvaluationReporter
 
-# --- Global Logger ---
+# Global logger
 logger = get_logger(__name__)
 
+# --- Global Logger ---
+# (Initialized above)
+
 # --- Checkpointing Constants & Functions ---
-CHECKPOINT_FILE = config.DATA_PROCESSED_DIR / "pipeline_checkpoint.json"
+# Ensure checkpoint directory exists
+checkpoint_dir = config.DATA_PROCESSED_DIR
+checkpoint_dir.mkdir(parents=True, exist_ok=True)
+CHECKPOINT_FILE = checkpoint_dir / "pipeline_checkpoint.json"
 
 
 def load_checkpoint():
@@ -185,6 +264,12 @@ def train_bi_encoder_optimized(bi_encoder_data):
             shuffle=True,
             batch_size=batch_size,
             num_workers=num_workers,
+            pin_memory=config.BI_ENCODER_DATALOADER_PIN_MEMORY,
+            prefetch_factor=(
+                config.BI_ENCODER_DATALOADER_PREFETCH_FACTOR
+                if num_workers > 0
+                else None
+            ),
         )
 
         evaluator = (
@@ -202,19 +287,80 @@ def train_bi_encoder_optimized(bi_encoder_data):
             initial_memory = torch.cuda.memory_allocated() / 1024**3
             logger.info(f"[BI-ENCODER] Initial GPU memory: {initial_memory:.2f} GB")
 
-        model.fit(
-            train_objectives=[(train_dataloader, train_loss)],
-            epochs=5,  # Increased for better learning
-            warmup_steps=100,  # Use steps for compatibility
-            optimizer_params={
-                "lr": 2e-5,  # Optimized learning rate
+        # Calculate warmup steps from ratio
+        warmup_steps = int(config.BI_ENCODER_WARMUP_RATIO * len(train_examples))
+
+        # Check sentence_transformers version and adjust parameters accordingly
+        import sentence_transformers
+
+        st_version = sentence_transformers.__version__
+        logger.info(f"[BI-ENCODER] Using sentence_transformers version: {st_version}")
+
+        # Apply runtime compatibility patch for SentenceTransformerTrainer.compute_loss
+        try:
+            from sentence_transformers.trainer import (
+                SentenceTransformerTrainer as _STTrainer,
+            )
+
+            _orig_compute_loss = getattr(_STTrainer, "compute_loss", None)
+
+            if callable(_orig_compute_loss):
+
+                def _compat_compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+                    # Ignore HF's new kwarg on older sbert versions
+                    kwargs.pop("num_items_in_batch", None)
+                    return _orig_compute_loss(self, model, inputs, return_outputs=return_outputs)
+
+                # Monkey-patch once
+                if _STTrainer.compute_loss is not _compat_compute_loss:
+                    _STTrainer.compute_loss = _compat_compute_loss
+                    logger.info("[BI-ENCODER] Patched SentenceTransformerTrainer.compute_loss for compatibility")
+        except Exception as patch_error:
+            logger.warning(f"[BI-ENCODER] Could not patch trainer compatibility: {patch_error}")
+
+        # Prepare fit parameters based on version (avoid incompatible kwargs)
+        fit_params = {
+            "train_objectives": [(train_dataloader, train_loss)],
+            "epochs": config.BI_ENCODER_EPOCHS,
+            "warmup_steps": warmup_steps,
+            "optimizer_params": {
+                "lr": config.BI_ENCODER_LR,
                 "eps": 1e-6,
             },
-            evaluator=evaluator,
-            output_path=str(config.BI_ENCODER_PATH),
-            # Additional optimizations
-            show_progress_bar=True,
-        )
+            # Remove evaluator for broader compatibility (v4+ may differ)
+            # "evaluator": evaluator,
+            "output_path": str(config.BI_ENCODER_PATH),
+            "show_progress_bar": True,
+        }
+
+        # Handle different sentence_transformers versions
+        if st_version >= "5.0.0":
+            logger.info("[BI-ENCODER] Using sentence_transformers 5.0+ parameters")
+            # For version 5.0+, remove evaluator and use newer API
+            if "evaluator" in fit_params:
+                del fit_params["evaluator"]
+            # Add newer parameters for v5.0+
+            fit_params["use_amp"] = False  # Disable AMP to avoid issues
+            fit_params["checkpoint_save_steps"] = 500
+            fit_params["checkpoint_save_total_limit"] = 2
+            # Do not pass device here; rely on internal device management
+        elif st_version >= "4.0.0":
+            logger.info("[BI-ENCODER] Using sentence_transformers 4.0+ parameters")
+            # Ensure we don't pass unsupported args like evaluator/device
+            if "evaluator" in fit_params:
+                del fit_params["evaluator"]
+        elif st_version < "2.2.0":
+            logger.info("[BI-ENCODER] Using legacy sentence_transformers parameters")
+            # Remove any parameters that might cause issues in older versions
+            if "evaluator" in fit_params:
+                del fit_params["evaluator"]
+        else:
+            logger.info("[BI-ENCODER] Using standard sentence_transformers parameters")
+            # Keep minimal, version-safe args only
+            if "evaluator" in fit_params:
+                del fit_params["evaluator"]
+
+        model.fit(**fit_params)
 
         # Memory cleanup
         if torch.cuda.is_available():
@@ -301,7 +447,65 @@ def _prepare_reranker_data(raw_data, model_name):
     logger.info(
         f"[{model_name}] Prepared {len(dataset_dict['text1'])} valid pairs. Skipped: {skipped}, Invalid Labels: {invalid_labels}."
     )
-    return Dataset.from_dict(dataset_dict) if dataset_dict["text1"] else None
+
+    if not dataset_dict["text1"]:
+        return None
+
+    # Create dataset
+    full_dataset = Dataset.from_dict(dataset_dict)
+
+    # Split into train and validation with robust, version-compatible stratification
+    try:
+        labels = list(full_dataset["label"]) if "label" in full_dataset.column_names else []
+        has_multiple_classes = len(set(labels)) > 1
+
+        if has_multiple_classes:
+            # Try encoding label to ClassLabel so stratify_by_column is permitted
+            try:
+                full_dataset = full_dataset.class_encode_column("label")
+            except Exception as e:
+                logger.warning(
+                    f"[{model_name}] Could not class-encode 'label' column for stratification: {e}"
+                )
+
+            # Check feature type dynamically to decide whether we can stratify
+            feature_type_name = (
+                type(full_dataset.features.get("label")).__name__
+                if hasattr(full_dataset, "features") and "label" in full_dataset.features
+                else ""
+            )
+
+            if feature_type_name == "ClassLabel":
+                split_dataset = full_dataset.train_test_split(
+                    test_size=config.VALIDATION_SPLIT_RATIO,
+                    seed=42,
+                    stratify_by_column="label",
+                )
+            else:
+                logger.warning(
+                    f"[{model_name}] 'label' is not ClassLabel (got {feature_type_name}); using random split"
+                )
+                split_dataset = full_dataset.train_test_split(
+                    test_size=config.VALIDATION_SPLIT_RATIO, seed=42
+                )
+        else:
+            split_dataset = full_dataset.train_test_split(
+                test_size=config.VALIDATION_SPLIT_RATIO, seed=42
+            )
+    except TypeError:
+        # Older datasets versions: no stratification support
+        logger.warning(
+            f"[{model_name}] 'train_test_split' does not support stratification in this datasets version; using random split"
+        )
+        split_dataset = full_dataset.train_test_split(
+            test_size=config.VALIDATION_SPLIT_RATIO, seed=42
+        )
+
+    logger.info(
+        f"[{model_name}] Split dataset: {len(split_dataset['train'])} train, {len(split_dataset['test'])} validation"
+    )
+
+    return split_dataset
 
 
 def _train_reranker(
@@ -333,25 +537,29 @@ def _train_reranker(
                 for text1, text2 in zip(examples["text1"], examples["text2"]):
                     # Enhanced cleaning with more aggressive filtering
                     import re
-                    
+
                     # Remove ALL problematic characters including unicode
-                    text1_clean = re.sub(r'[^\w\s\u00C0-\u1EF9]+', ' ', str(text1)).strip()
-                    text2_clean = re.sub(r'[^\w\s\u00C0-\u1EF9]+', ' ', str(text2)).strip()
-                    
+                    text1_clean = re.sub(
+                        r"[^\w\s\u00C0-\u1EF9]+", " ", str(text1)
+                    ).strip()
+                    text2_clean = re.sub(
+                        r"[^\w\s\u00C0-\u1EF9]+", " ", str(text2)
+                    ).strip()
+
                     # Remove extra whitespace
-                    text1_clean = re.sub(r'\s+', ' ', text1_clean).strip()
-                    text2_clean = re.sub(r'\s+', ' ', text2_clean).strip()
-                    
+                    text1_clean = re.sub(r"\s+", " ", text1_clean).strip()
+                    text2_clean = re.sub(r"\s+", " ", text2_clean).strip()
+
                     # Ensure minimum and maximum length
                     if not text1_clean or len(text1_clean) < 3:
                         text1_clean = "text"
                     if not text2_clean or len(text2_clean) < 3:
                         text2_clean = "text"
-                    
+
                     # Strict length limits
-                    text1_clean = text1_clean[:max_length//2]
-                    text2_clean = text2_clean[:max_length//2]
-                    
+                    text1_clean = text1_clean[: max_length // 2]
+                    text2_clean = text2_clean[: max_length // 2]
+
                     cleaned_text1.append(text1_clean)
                     cleaned_text2.append(text2_clean)
 
@@ -359,7 +567,7 @@ def _train_reranker(
                 result = tokenizer(
                     cleaned_text1,
                     cleaned_text2,
-                    truncation=True,
+                    truncation="only_second",
                     padding="max_length",
                     max_length=max_length,
                     return_tensors=None,
@@ -367,14 +575,20 @@ def _train_reranker(
 
                 # Strict token ID validation
                 vocab_size = len(tokenizer)
-                unk_id = tokenizer.unk_token_id if tokenizer.unk_token_id is not None else 0
-                
+                unk_id = (
+                    tokenizer.unk_token_id if tokenizer.unk_token_id is not None else 0
+                )
+
                 for key in ["input_ids", "attention_mask"]:
                     if key in result:
                         for i, ids in enumerate(result[key]):
                             # Replace ALL invalid tokens with UNK
                             result[key][i] = [
-                                unk_id if token_id >= vocab_size or token_id < 0 else token_id
+                                (
+                                    unk_id
+                                    if token_id >= vocab_size or token_id < 0
+                                    else token_id
+                                )
                                 for token_id in ids
                             ]
 
@@ -383,14 +597,59 @@ def _train_reranker(
                 logger.error(f"[{model_log_name}] Critical preprocessing error: {e}")
                 # Return safe fallback
                 return {
-                    "input_ids": [[tokenizer.cls_token_id] + [unk_id] * (max_length-2) + [tokenizer.sep_token_id]],
+                    "input_ids": [
+                        [tokenizer.cls_token_id]
+                        + [unk_id] * (max_length - 2)
+                        + [tokenizer.sep_token_id]
+                    ],
                     "attention_mask": [[1] * max_length],
-                    "labels": [0]
+                    "labels": [0],
                 }
 
-        dataset_splits = training_data.train_test_split(test_size=0.1, seed=42)
-        train_dataset = dataset_splits["train"].map(preprocess_function, batched=True)
-        eval_dataset = dataset_splits["test"].map(preprocess_function, batched=True)
+        # Handle dataset splits - training_data is already split from _prepare_reranker_data
+        if (
+            isinstance(training_data, dict)
+            and "train" in training_data
+            and "test" in training_data
+        ):
+            # Dataset is already split
+            train_dataset = training_data["train"].map(
+                preprocess_function, batched=True
+            )
+            eval_dataset = training_data["test"].map(preprocess_function, batched=True)
+        else:
+            # Fallback: split the dataset here
+            dataset_splits = training_data.train_test_split(test_size=0.1, seed=42)
+            train_dataset = dataset_splits["train"].map(
+                preprocess_function, batched=True
+            )
+            eval_dataset = dataset_splits["test"].map(preprocess_function, batched=True)
+
+        # Add early stopping callback based on model type (compat with older transformers)
+        callbacks = []
+        try:
+            # Only add when we know Trainer can evaluate; otherwise it asserts
+            if hasattr(training_args, "evaluation_strategy") and str(getattr(training_args, "evaluation_strategy", "")):
+                if "Light-Reranker" in model_log_name:
+                    callbacks.append(
+                        EarlyStoppingCallback(
+                            early_stopping_patience=config.LIGHT_RERANKER_EARLY_STOPPING_PATIENCE,
+                            early_stopping_threshold=config.LIGHT_RERANKER_EARLY_STOPPING_THRESHOLD,
+                        )
+                    )
+                elif "Cross-Encoder" in model_log_name:
+                    callbacks.append(
+                        EarlyStoppingCallback(
+                            early_stopping_patience=config.CROSS_ENCODER_EARLY_STOPPING_PATIENCE,
+                            early_stopping_threshold=config.CROSS_ENCODER_EARLY_STOPPING_THRESHOLD,
+                        )
+                    )
+        except Exception as e:
+            logger.warning(
+                f"[{model_log_name}] Could not add EarlyStoppingCallback: {e}"
+            )
+            # Continue without early stopping if there's an issue
+            callbacks = []
 
         trainer = Trainer(
             model=model,
@@ -400,6 +659,7 @@ def _train_reranker(
             compute_metrics=lambda p: {
                 "accuracy": (p.predictions.argmax(-1) == p.label_ids).mean()
             },
+            callbacks=callbacks,
         )
 
         # Set environment variables to help with CUDA debugging
@@ -417,13 +677,19 @@ def _train_reranker(
             trainer.train()
         except RuntimeError as e:
             if "CUDA" in str(e) or "out of memory" in str(e).lower():
-                logger.error(f"[{model_log_name}] CUDA/Memory error during training: {e}")
-                
+                logger.error(
+                    f"[{model_log_name}] CUDA/Memory error during training: {e}"
+                )
+
                 # Try with reduced batch size first
                 logger.info(f"[{model_log_name}] Attempting with reduced batch size...")
-                training_args.per_device_train_batch_size = max(1, training_args.per_device_train_batch_size // 2)
-                training_args.per_device_eval_batch_size = max(1, training_args.per_device_eval_batch_size // 2)
-                
+                training_args.per_device_train_batch_size = max(
+                    1, training_args.per_device_train_batch_size // 2
+                )
+                training_args.per_device_eval_batch_size = max(
+                    1, training_args.per_device_eval_batch_size // 2
+                )
+
                 trainer = Trainer(
                     model=model,
                     args=training_args,
@@ -431,17 +697,19 @@ def _train_reranker(
                     eval_dataset=eval_dataset,
                     tokenizer=tokenizer,
                 )
-                
+
                 try:
                     trainer.train()
                 except RuntimeError as e2:
-                    logger.error(f"[{model_log_name}] Still failing with reduced batch size: {e2}")
+                    logger.error(
+                        f"[{model_log_name}] Still failing with reduced batch size: {e2}"
+                    )
                     # Final fallback to CPU
                     logger.info(f"[{model_log_name}] Attempting CPU training...")
                     training_args.device = torch.device("cpu")
                     training_args.per_device_train_batch_size = 4
                     training_args.per_device_eval_batch_size = 4
-                    
+
                     trainer = Trainer(
                         model=model,
                         args=training_args,
@@ -466,6 +734,82 @@ def _train_reranker(
     except Exception as e:
         logger.error(f"[{model_log_name}] Training failed: {e}", exc_info=True)
         return False
+# --- Compatibility helper for TrainingArguments across transformers versions ---
+def build_training_args_compat(
+    *,
+    output_dir: str,
+    num_train_epochs: int,
+    per_device_train_batch_size: int,
+    learning_rate: float,
+    warmup_steps: int,
+    eval_steps: int,
+    save_steps: int,
+    fp16: bool,
+    gradient_accumulation_steps: int,
+    dataloader_num_workers: int = None,
+    dataloader_pin_memory: bool = None,
+    dataloader_prefetch_factor: int = None,
+    metric_for_best_model: str = None,
+    greater_is_better: bool = None,
+    load_best_model_at_end: bool = None,
+):
+    """Build TrainingArguments with graceful degradation for older transformers."""
+    from transformers import TrainingArguments
+
+    init_params = inspect.signature(TrainingArguments.__init__).parameters
+    accepted = set(init_params.keys())
+
+    # Base kwargs
+    kwargs = {
+        "output_dir": output_dir,
+        "num_train_epochs": num_train_epochs,
+        "per_device_train_batch_size": per_device_train_batch_size,
+        "learning_rate": learning_rate,
+        "warmup_steps": warmup_steps,
+        "logging_steps": max(1, eval_steps // 2) if isinstance(eval_steps, int) and eval_steps > 0 else 10,
+        "save_steps": save_steps,
+        "fp16": fp16,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+    }
+
+    # Optional params included only if supported
+    optional_params = {
+        "dataloader_num_workers": dataloader_num_workers,
+        "dataloader_pin_memory": dataloader_pin_memory,
+        # Newer APIs only; include if available
+        "metric_for_best_model": metric_for_best_model,
+        "greater_is_better": greater_is_better,
+        "load_best_model_at_end": load_best_model_at_end,
+        # Many older versions don't support these; we skip by default
+        # "evaluation_strategy": "steps",
+        # "save_strategy": "steps",
+        # "remove_unused_columns": False,
+        # "report_to": "none",
+    }
+
+    for key, value in optional_params.items():
+        if value is not None and key in accepted:
+            kwargs[key] = value
+
+    # Strategies: ensure consistency if possible
+    can_set_eval = "evaluation_strategy" in accepted
+    can_set_save = "save_strategy" in accepted
+    if can_set_eval and can_set_save:
+        # align both to steps
+        kwargs["evaluation_strategy"] = "steps"
+        kwargs["save_strategy"] = "steps"
+    else:
+        # Cannot set strategies consistently; disable best model at end to avoid ValueError
+        if "load_best_model_at_end" in kwargs:
+            kwargs["load_best_model_at_end"] = False
+        # Fallback for very old versions: use evaluate_during_training if exists
+        if "evaluation_strategy" not in accepted and "evaluate_during_training" in accepted and eval_steps:
+            kwargs["evaluate_during_training"] = True
+
+    # Finally, filter strictly to accepted keys
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k in accepted}
+
+    return TrainingArguments(**filtered_kwargs)
 
 
 def run_comprehensive_evaluation():
@@ -544,20 +888,51 @@ def run_comprehensive_evaluation():
 
         # Retrieval metrics
         evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
-        retrieval_aids_batch = [
-            [aid for aid in preds] for preds in retrieval_predictions
-        ]
-        retrieval_metrics = evaluator.evaluate_batch(
-            queries, ground_truth_sets, retrieval_aids_batch
-        )
+        retrieval_aids_batch = [[aid for aid in preds] for preds in retrieval_predictions]
+
+        # Evaluate or fallback to zeros using consistent flat metrics format
+        try:
+            computed = (
+                evaluator.evaluate_batch(queries, ground_truth_sets, retrieval_aids_batch)
+                if retrieval_aids_batch
+                else {}
+            )
+        except Exception as e:
+            logger.error(f"[EVAL] Error computing retrieval metrics: {e}")
+            computed = {}
+
+        if not computed:
+            logger.warning("[EVAL] Empty retrieval results, using default metrics")
+            retrieval_metrics = {
+                f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]
+            }
+            retrieval_metrics.update({f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+            retrieval_metrics.update({f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+        else:
+            retrieval_metrics = computed
 
         # Reranking metrics
-        reranking_aids_batch = [
-            [res["aid"] for res in preds] for preds in reranking_predictions
-        ]
-        reranking_metrics = evaluator.evaluate_batch(
-            queries, ground_truth_sets, reranking_aids_batch
-        )
+        reranking_aids_batch = [[res["aid"] for res in preds] for preds in reranking_predictions]
+
+        try:
+            computed_r = (
+                evaluator.evaluate_batch(queries, ground_truth_sets, reranking_aids_batch)
+                if reranking_aids_batch
+                else {}
+            )
+        except Exception as e:
+            logger.error(f"[EVAL] Error computing reranking metrics: {e}")
+            computed_r = {}
+
+        if not computed_r:
+            logger.warning("[EVAL] Empty reranking results, using default metrics")
+            reranking_metrics = {
+                f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]
+            }
+            reranking_metrics.update({f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+            reranking_metrics.update({f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+        else:
+            reranking_metrics = computed_r
 
         # 6. Tạo per-query results chi tiết
         logger.info("[EVAL] Creating detailed per-query results...")
@@ -692,19 +1067,21 @@ def run_comprehensive_evaluation():
         logger.info("📊 COMPREHENSIVE EVALUATION RESULTS:")
         logger.info("=" * 80)
 
-        # Retrieval summary
+        # Retrieval summary (flat metrics: precision@k/recall@k/f1@k)
         logger.info("🎯 RETRIEVAL PERFORMANCE (Tier 1 - Bi-Encoder):")
-        for k, metrics in retrieval_metrics.items():
-            logger.info(
-                f"  Top-{k}: Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}"
-            )
+        for k in [1, 3, 5, 10, 20, 50]:
+            p = retrieval_metrics.get(f"precision@{k}", 0.0)
+            r = retrieval_metrics.get(f"recall@{k}", 0.0)
+            f1 = retrieval_metrics.get(f"f1@{k}", 0.0)
+            logger.info(f"  Top-{k}: Precision={p:.4f}, Recall={r:.4f}, F1={f1:.4f}")
 
-        # Reranking summary
+        # Reranking summary (flat metrics)
         logger.info("⚡ RERANKING PERFORMANCE (Tier 3 - Cross-Encoder):")
-        for k, metrics in reranking_metrics.items():
-            logger.info(
-                f"  Top-{k}: Precision={metrics['precision']:.4f}, Recall={metrics['recall']:.4f}, F1={metrics['f1']:.4f}"
-            )
+        for k in [1, 3, 5, 10, 20, 50]:
+            p = reranking_metrics.get(f"precision@{k}", 0.0)
+            r = reranking_metrics.get(f"recall@{k}", 0.0)
+            f1 = reranking_metrics.get(f"f1@{k}", 0.0)
+            logger.info(f"  Top-{k}: Precision={p:.4f}, Recall={r:.4f}, F1={f1:.4f}")
 
         # Improvement summary
         logger.info("📈 PERFORMANCE IMPROVEMENT (Reranking vs Retrieval):")
@@ -741,8 +1118,44 @@ def run_comprehensive_evaluation():
 
 def main():
     """Hàm chính điều khiển toàn bộ pipeline huấn luyện và đánh giá."""
+    # --- Config Reloading for Performance Mode ---
+    # Reload config to ensure latest performance mode settings are applied
+    try:
+        importlib.reload(config)
+        logger.info(f"[CONFIG] Reloaded config with PERFORMANCE_MODE: {config.PERFORMANCE_MODE}")
+        logger.info(f"[CONFIG] Bi-Encoder epochs: {config.BI_ENCODER_EPOCHS}")
+        logger.info(f"[CONFIG] Cross-Encoder epochs: {config.CROSS_ENCODER_EPOCHS}")
+        logger.info(f"[CONFIG] Light Reranker epochs: {config.LIGHT_RERANKER_EPOCHS}")
+        
+        # Double-check environment variable (ensure scripts can be called directly with --mode)
+        env_performance_mode = os.getenv("LAWBOT_PERFORMANCE_MODE", "quality")
+        if env_performance_mode != config.PERFORMANCE_MODE:
+            logger.warning(
+                f"[CONFIG] Environment variable LAWBOT_PERFORMANCE_MODE={env_performance_mode} but config.PERFORMANCE_MODE={config.PERFORMANCE_MODE}"
+            )
+            logger.info("[CONFIG] Forcing config reload with environment variable...")
+            # Force reload by clearing module cache
+            for m in ('config', 'config_fast', 'config_quality', 'config_base'):
+                if m in sys.modules:
+                    del sys.modules[m]
+            # Re-import config without creating a local binding that shadows the global
+            reloaded_config = importlib.import_module('config')
+            globals()['config'] = reloaded_config
+            logger.info(f"[CONFIG] After force reload - PERFORMANCE_MODE: {config.PERFORMANCE_MODE}")
+            
+    except Exception as e:
+        logger.warning(f"[CONFIG] Could not reload config: {e}")
+        # Ensure config is available even if reload fails
+        try:
+            reloaded_config = importlib.import_module('config')
+            globals()['config'] = reloaded_config
+        except Exception:
+            logger.error("Could not import config module")
+            return False
+    
     logger.info("=" * 80)
     logger.info("STARTING: Model Training & Evaluation Pipeline v8.0")
+    logger.info(f"PERFORMANCE MODE: {config.PERFORMANCE_MODE.upper()}")
     logger.info("=" * 80)
     logger.info("Pipeline Overview:")
     logger.info("   - Step 1: Bi-Encoder Training (Sentence Transformers)")
@@ -751,6 +1164,15 @@ def main():
     logger.info("   - Step 4: Light Reranker Training (Fast Reranking)")
     logger.info("   - Step 5: Comprehensive Evaluation (Full Metrics)")
     logger.info("=" * 80)
+
+    # Ensure all necessary directories exist
+    logger.info("Creating necessary directories...")
+    config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    config.INDEXES_DIR.mkdir(parents=True, exist_ok=True)
+    config.BI_ENCODER_PATH.mkdir(parents=True, exist_ok=True)
+    config.CROSS_ENCODER_PATH.mkdir(parents=True, exist_ok=True)
+    config.LIGHT_RERANKER_PATH.mkdir(parents=True, exist_ok=True)
+    logger.info("Directories created successfully")
 
     checkpoint_state = load_checkpoint()
 
@@ -790,7 +1212,7 @@ def main():
             logger.info("STEP 3: Cross-Encoder Training...")
             dataset = _prepare_reranker_data(reranker_data, "Cross-Encoder")
             if dataset:
-                args = TrainingArguments(
+                args = build_training_args_compat(
                     output_dir=str(config.CROSS_ENCODER_PATH),
                     num_train_epochs=config.CROSS_ENCODER_EPOCHS,
                     per_device_train_batch_size=config.CROSS_ENCODER_BATCH_SIZE,
@@ -798,15 +1220,14 @@ def main():
                     warmup_steps=config.CROSS_ENCODER_WARMUP_RATIO,
                     eval_steps=config.CROSS_ENCODER_EVAL_STEPS,
                     save_steps=config.CROSS_ENCODER_EVAL_STEPS * 2,
-                    report_to="none",
-                    # Memory optimizations
-                    gradient_checkpointing=True,
-                    dataloader_pin_memory=False,
-                    remove_unused_columns=False,
-                    # Additional optimizations
                     fp16=config.FP16_TRAINING,
                     gradient_accumulation_steps=config.CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS,
                     dataloader_num_workers=config.CROSS_ENCODER_DATALOADER_NUM_WORKERS,
+                    dataloader_pin_memory=False,
+                    dataloader_prefetch_factor=config.CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR,
+                    metric_for_best_model=None,
+                    greater_is_better=None,
+                    load_best_model_at_end=False,
                 )
                 if not _train_reranker(
                     config.CROSS_ENCODER_MODEL_NAME,
@@ -822,26 +1243,33 @@ def main():
                 logger.error("Failed to prepare Cross-Encoder dataset.")
                 raise RuntimeError("Cross-Encoder dataset preparation failed.")
         else:
-            logger.info("STEP 3: Cross-Encoder Training... [SKIPPED - Already complete]")
+            logger.info(
+                "STEP 3: Cross-Encoder Training... [SKIPPED - Already complete]"
+            )
 
         # --- Step 4: Light Reranker Training ---
         if not is_step_complete(checkpoint_state, "train_light_reranker"):
             logger.info("STEP 4: Light Reranker Training...")
             dataset = _prepare_reranker_data(reranker_data, "Light-Reranker")
             if dataset:
-                args = TrainingArguments(
+                args = build_training_args_compat(
                     output_dir=str(config.LIGHT_RERANKER_PATH),
-                    num_train_epochs=2,
+                    num_train_epochs=config.LIGHT_RERANKER_EPOCHS,
                     per_device_train_batch_size=config.LIGHT_RERANKER_BATCH_SIZE,
-                    learning_rate=config.CROSS_ENCODER_LR,
-                    warmup_steps=50,
-                    eval_steps=200,
-                    save_steps=200,
-                    report_to="none",
-                    # Memory optimizations
-                    gradient_checkpointing=True,
-                    dataloader_pin_memory=False,
-                    remove_unused_columns=False,
+                    learning_rate=config.LIGHT_RERANKER_LR,
+                    warmup_steps=int(
+                        config.LIGHT_RERANKER_WARMUP_RATIO * len(dataset["train"])
+                    ),
+                    eval_steps=config.LIGHT_RERANKER_EVAL_STEPS,
+                    save_steps=config.LIGHT_RERANKER_EVAL_STEPS * 2,
+                    fp16=config.FP16_TRAINING,
+                    gradient_accumulation_steps=config.LIGHT_RERANKER_GRADIENT_ACCUMULATION_STEPS,
+                    dataloader_num_workers=config.LIGHT_RERANKER_DATALOADER_NUM_WORKERS,
+                    dataloader_pin_memory=config.CROSS_ENCODER_DATALOADER_PIN_MEMORY,
+                    dataloader_prefetch_factor=config.CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR,
+                    metric_for_best_model=None,
+                    greater_is_better=None,
+                    load_best_model_at_end=False,
                 )
                 if not _train_reranker(
                     config.LIGHT_RERANKER_MODEL_NAME,
@@ -857,16 +1285,22 @@ def main():
                 logger.error("Failed to prepare Light Reranker dataset.")
                 raise RuntimeError("Light Reranker dataset preparation failed.")
         else:
-            logger.info("STEP 4: Light Reranker Training... [SKIPPED - Already complete]")
+            logger.info(
+                "STEP 4: Light Reranker Training... [SKIPPED - Already complete]"
+            )
 
         # --- Step 5: Comprehensive Evaluation ---
         if not is_step_complete(checkpoint_state, "run_evaluation"):
             logger.info("STEP 5: Comprehensive Evaluation...")
             if not run_comprehensive_evaluation():
-                logger.warning("Evaluation run failed, but training steps are complete.")
+                logger.warning(
+                    "Evaluation run failed, but training steps are complete."
+                )
             mark_step_complete(checkpoint_state, "run_evaluation")
         else:
-            logger.info("STEP 5: Comprehensive Evaluation... [SKIPPED - Already complete]")
+            logger.info(
+                "STEP 5: Comprehensive Evaluation... [SKIPPED - Already complete]"
+            )
 
     except Exception as e:
         logger.error(

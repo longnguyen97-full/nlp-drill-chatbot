@@ -19,6 +19,7 @@ from typing import Optional, Dict, Any
 import threading
 import queue
 import time
+from contextlib import contextmanager
 
 
 class UnifiedLogger:
@@ -88,7 +89,7 @@ class UnifiedLogger:
 
         # Formatter chi tiet cho file
         file_formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+            "%(asctime)s [%(levelname)s] [%(name)s] [%(funcName)s:%(lineno)d] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
         file_handler.setFormatter(file_formatter)
@@ -99,7 +100,8 @@ class UnifiedLogger:
 
         # Formatter ngan gon cho console
         console_formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+            "%(asctime)s [%(levelname)s] [%(name)s] [%(funcName)s:%(lineno)d] %(message)s",
+            datefmt="%H:%M:%S",
         )
         console_handler.setFormatter(console_formatter)
 

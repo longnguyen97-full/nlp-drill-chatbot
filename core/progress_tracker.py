@@ -134,40 +134,52 @@ class StepLogger:
     """Logger chuyen dung cho tung buoc"""
 
     def __init__(self, step_name: str):
+        # step_name should be an id like "03"; create concise logger name
         self.step_name = step_name
         self.logger = logging.getLogger(f"step.{step_name}")
         self.start_time = time.time()
 
     def info(self, message: str):
         """Log thong tin"""
-        self.logger.info(f"[BUOC {self.step_name}] {message}")
+        self.logger.info(f"[STEP {self.step_name}] {message}")
 
     def warning(self, message: str):
         """Log canh bao"""
-        self.logger.warning(f"[BUOC {self.step_name}] [WARNING] {message}")
+        self.logger.warning(f"[STEP {self.step_name}] [WARN] {message}")
 
     def error(self, message: str):
         """Log loi"""
-        self.logger.error(f"[BUOC {self.step_name}] [FAIL] {message}")
+        self.logger.error(f"[STEP {self.step_name}] [FAIL] {message}")
 
     def success(self, message: str):
         """Log thanh cong"""
-        self.logger.info(f"[BUOC {self.step_name}] [OK] {message}")
+        self.logger.info(f"[STEP {self.step_name}] [OK] {message}")
 
     def step_complete(self, additional_info: str = ""):
         """Log hoan thanh buoc"""
         elapsed = time.time() - self.start_time
         self.logger.info(
-            f"[BUOC {self.step_name}] [OK] Hoan thanh trong {elapsed:.1f}s {additional_info}"
+            f"[STEP {self.step_name}] [OK] Hoan thanh trong {elapsed:.1f}s {additional_info}"
         )
 
     def step_start(self, message: str):
         """Log bat dau buoc"""
-        self.logger.info(f"[BUOC {self.step_name}] [START] {message}")
+        self.logger.info(f"[STEP {self.step_name}] [START] {message}")
+
+    def func_start(self, func_name: str, detail: str = ""):
+        """Log bat dau mot ham con trong buoc"""
+        suffix = f" - {detail}" if detail else ""
+        self.logger.info(f"[STEP {self.step_name}] [FUNC] ▶ {func_name}{suffix}")
+
+    def func_end(self, func_name: str, ok: bool = True, detail: str = ""):
+        """Log ket thuc mot ham con trong buoc"""
+        status = "OK" if ok else "FAIL"
+        suffix = f" - {detail}" if detail else ""
+        self.logger.info(f"[STEP {self.step_name}] [FUNC] ◀ {func_name} [{status}]{suffix}")
 
     def step_progress(self, message: str):
         """Log tien do trong buoc"""
-        self.logger.info(f"[BUOC {self.step_name}] [LIST] {message}")
+        self.logger.info(f"[STEP {self.step_name}] [OUT] {message}")
 
 
 def format_time(seconds: float) -> str:

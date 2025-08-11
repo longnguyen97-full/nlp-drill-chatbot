@@ -179,8 +179,22 @@ python run_pipeline.py --start-step 03 --mode fast
 # 5) Xoá checkpoint
 python run_pipeline.py --clear-checkpoint
 
-# 6) Chỉ chạy đánh giá (nếu cần riêng)
+# 6) Chạy đánh giá (evaluation)
+# Cơ bản (nhanh):
 python scripts/04_evaluate_models.py --mode fast
+
+# Nhanh hơn với sampling (100 queries từ validation) và giảm Top-K
+python scripts/04_evaluate_models.py --mode fast --fast-eval --prefer-source=validation --max-queries=100 --sample-seed=42 --topk-retrieval=80 --topk-light=40 --topk-final=5
+
+# Đánh giá đầy đủ chất lượng cao (không rút gọn)
+python scripts/04_evaluate_models.py --mode quality --no-fast-eval
+
+# Chọn nguồn dữ liệu đánh giá
+python scripts/04_evaluate_models.py --mode fast --prefer-source=train
+python scripts/04_evaluate_models.py --mode fast --prefer-source=public_test
+
+# Ghi chú: Báo cáo được lưu tại reports/evaluation_report_*.json và sẽ hiển thị ở trang
+# "📊 Kết quả Training" trong app.
 
 # 7) Chuyển chế độ hiệu năng (toàn hệ thống)
 python switch_performance_mode.py fast --immediate

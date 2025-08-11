@@ -19,7 +19,8 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
+import random
 import traceback
 
 # Early CLI pre-parse to allow --mode fast|quality BEFORE importing config
@@ -62,6 +63,9 @@ def run_enhanced_evaluation():
     logger.info("=" * 80)
 
     try:
+        # Parse optional CLI options for faster evaluation and data source
+        opts = _parse_eval_cli_options()
+
         # 1. Khởi tạo pipeline với enhanced error handling
         logger.info("[EVAL] Initializing enhanced pipeline...")
         pipeline = LegalQAPipeline(use_ensemble=True, use_cascaded_reranking=True)
@@ -69,22 +73,17 @@ def run_enhanced_evaluation():
             logger.error("[EVAL] Pipeline is not ready. Cannot run evaluation.")
             return False
 
-        # 2. Load validation data
-        logger.info("[EVAL] Loading validation data...")
-        if not config.VAL_SPLIT_JSON_PATH.exists():
-            logger.error(
-                f"[EVAL] Validation data not found at {config.VAL_SPLIT_JSON_PATH}"
-            )
+        # 2. Load evaluation data with fallbacks and sampling
+        logger.info("[EVAL] Loading evaluation data...")
+        queries, ground_truth_sets, data_path = _load_eval_data_with_fallbacks(
+            prefer=opts.get("prefer_source", "validation"),
+            max_queries=opts.get("max_queries"),
+            sample_seed=opts.get("sample_seed"),
+            allow_fallbacks=opts.get("allow_fallbacks", False),
+        )
+        if not queries:
+            logger.error("[EVAL] No evaluation queries available.")
             return False
-
-        with open(config.VAL_SPLIT_JSON_PATH, "r", encoding="utf-8") as f:
-            val_data = json.load(f)
-
-        queries = [item["question"] for item in val_data]
-        # Canonicalize ground-truth AIDs to align with index/aid_map
-        ground_truth_sets = [
-            canonicalize_aid_set(item.get("relevant_aids", [])) for item in val_data
-        ]
 
         # Sanity check: Coverage of ground-truth AIDs in current index
         try:
@@ -121,7 +120,15 @@ def run_enhanced_evaluation():
 
         # Tier 1: Bi-Encoder Retrieval
         logger.info("[EVAL] === TIER 1: Bi-Encoder Retrieval ===")
-        tier1_results = evaluate_tier1_retrieval(pipeline, queries, ground_truth_sets)
+        if opts.get("fast_eval", True):
+            tier1_results = evaluate_tier1_retrieval_batch(
+                pipeline,
+                queries,
+                ground_truth_sets,
+                top_k=opts.get("top_k_retrieval") or config.TOP_K_RETRIEVAL,
+            )
+        else:
+            tier1_results = evaluate_tier1_retrieval(pipeline, queries, ground_truth_sets)
 
         # Tier 2: Light Reranker (only)
         logger.info("[EVAL] === TIER 2: Light Reranker (only) ===")
@@ -133,17 +140,36 @@ def run_enhanced_evaluation():
         logger.info(
             "[EVAL] === TIER 3 (Strong Only): Cross-Encoder Reranking (no Light Reranker) ==="
         )
-        tier3_strong_only_results = evaluate_tier3_reranking_strong_only(
-            pipeline, queries, ground_truth_sets
-        )
+        if opts.get("fast_eval", True):
+            tier3_strong_only_results = evaluate_tier3_reranking_batch(
+                pipeline,
+                queries,
+                ground_truth_sets,
+                top_k_retrieval=opts.get("top_k_retrieval") or config.TOP_K_RETRIEVAL,
+                top_k_final=min(10, opts.get("top_k_final") or 10),
+            )
+        else:
+            tier3_strong_only_results = evaluate_tier3_reranking_strong_only(
+                pipeline, queries, ground_truth_sets
+            )
 
         # Cascaded (Tier 2 + Tier 3): Light Reranker + Cross-Encoder Reranking
         logger.info(
             "[EVAL] === CASCADED (Tier 2 + Tier 3): Light Reranker + Cross-Encoder ==="
         )
-        cascaded_results = evaluate_cascaded_reranking(
-            pipeline, queries, ground_truth_sets
-        )
+        if opts.get("fast_eval", True):
+            cascaded_results = evaluate_cascaded_reranking_batch(
+                pipeline,
+                queries,
+                ground_truth_sets,
+                top_k_retrieval=opts.get("top_k_retrieval") or config.TOP_K_RETRIEVAL,
+                top_k_light=opts.get("top_k_light") or config.TOP_K_LIGHT_RERANKING,
+                top_k_final=min(10, opts.get("top_k_final") or 10),
+            )
+        else:
+            cascaded_results = evaluate_cascaded_reranking(
+                pipeline, queries, ground_truth_sets
+            )
 
         # 4. Xây per-query results phù hợp reporter
         logger.info("[EVAL] Building per-query detailed results...")
@@ -280,6 +306,13 @@ def run_enhanced_evaluation():
             "evaluation_type": "enhanced_comprehensive",
             "total_queries": len(queries),
             "aid_normalization": "canonical_ascii",
+            "data_source": str(data_path) if data_path else "unknown",
+            "fast_eval": opts.get("fast_eval", True),
+            "top_k_overrides": {
+                "retrieval": opts.get("top_k_retrieval"),
+                "light": opts.get("top_k_light"),
+                "final": opts.get("top_k_final"),
+            },
         }
         report = reporter.create_comprehensive_report(
             retrieval_metrics=tier1_results["metrics"],
@@ -381,6 +414,55 @@ def evaluate_tier1_retrieval(
         }
 
 
+def evaluate_tier1_retrieval_batch(
+    pipeline: LegalQAPipeline,
+    queries: List[str],
+    ground_truth_sets: List[set],
+    top_k: int,
+) -> Dict[str, Any]:
+    """Batch retrieval for speed using SentenceTransformer batch encode + FAISS batch.
+
+    Uses `LegalQAPipeline.retrieve_batch` which already optimizes embeddings & FAISS
+    calls in a vectorized fashion.
+    """
+    logger.info("[TIER1] Batch evaluating Bi-Encoder retrieval performance...")
+
+    try:
+        retrieved_aids_batch, distances_batch = pipeline.retrieve_batch(queries, top_k)
+
+        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        metrics = evaluator.evaluate_batch(queries, ground_truth_sets, retrieved_aids_batch)
+
+        # Convert distances to normalized scores per query
+        retrieval_scores = []
+        for distances in distances_batch:
+            if distances is None or len(distances) == 0:
+                retrieval_scores.append([])
+                continue
+            max_dist = max(distances) if len(distances) > 0 else 1.0
+            scores = [1.0 - (d / max_dist) if max_dist > 0 else 0.0 for d in distances]
+            retrieval_scores.append(scores)
+
+        return {
+            "predictions": retrieved_aids_batch,
+            "scores": retrieval_scores,
+            "metrics": metrics or {f"precision@{k}": 0.0 for k in [1,3,5,10,20,50]},
+            "success": True,
+        }
+    except Exception as e:
+        logger.error(f"[TIER1] Batch retrieval evaluation failed: {e}")
+        return {
+            "predictions": [],
+            "scores": [],
+            "metrics": {
+                **{f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+            },
+            "success": False,
+            "error": str(e),
+        }
+
 def evaluate_tier3_reranking(
     pipeline: LegalQAPipeline, queries: List[str], ground_truth_sets: List[set]
 ) -> Dict[str, Any]:
@@ -454,6 +536,61 @@ def evaluate_tier3_reranking(
             "error": str(e),
         }
 
+
+def evaluate_tier3_reranking_batch(
+    pipeline: LegalQAPipeline,
+    queries: List[str],
+    ground_truth_sets: List[set],
+    top_k_retrieval: int,
+    top_k_final: int,
+) -> Dict[str, Any]:
+    """Faster Tier-3 eval by avoiding light reranker and using vectorized retrieval."""
+    logger.info("[TIER3-STRONG] Batch evaluating strong-only reranking...")
+
+    predictions: List[List[Dict[str, Any]]] = []
+    scores: List[List[float]] = []
+
+    try:
+        # First retrieve for all queries in batch
+        retrieved_aids_batch, retrieved_distances_batch = pipeline.retrieve_batch(
+            queries, top_k_retrieval
+        )
+
+        # Then rerank per query using strong reranker directly
+        for q, aids, dists in zip(queries, retrieved_aids_batch, retrieved_distances_batch):
+            try:
+                results = pipeline.rerank(q, aids, dists)
+                results = results[:top_k_final]
+                predictions.append(results)
+                scores.append([r.get("rerank_score", 0.0) for r in results])
+            except Exception as e:
+                logger.warning(f"[TIER3-STRONG] Query rerank failed: {e}")
+                predictions.append([])
+                scores.append([])
+
+        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        aids_batch = [[res["aid"] for res in preds] for preds in predictions]
+        metrics = evaluator.evaluate_batch(queries, ground_truth_sets, aids_batch)
+
+        return {
+            "predictions": predictions,
+            "scores": scores,
+            "metrics": metrics or {f"precision@{k}": 0.0 for k in [1,3,5,10,20,50]},
+            "success": True,
+        }
+    except Exception as e:
+        logger.error(f"[TIER3-STRONG] Batch evaluation failed: {e}")
+        return {
+            "predictions": [],
+            "scores": [],
+            "metrics": {
+                **{f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+            },
+            "success": False,
+            "error": str(e),
+        }
 
 def evaluate_tier2_light_reranking(
     pipeline: LegalQAPipeline, queries: List[str], ground_truth_sets: List[set]
@@ -646,7 +783,6 @@ def evaluate_cascaded_reranking(
             "metrics": metrics,
             "success": True,
         }
-
     except Exception as e:
         logger.error(f"[CASCADED] Evaluation failed: {e}")
         return {
@@ -660,6 +796,66 @@ def evaluate_cascaded_reranking(
             "success": False,
             "error": str(e),
         }
+
+def evaluate_cascaded_reranking_batch(
+    pipeline: LegalQAPipeline,
+    queries: List[str],
+    ground_truth_sets: List[set],
+    top_k_retrieval: int,
+    top_k_light: int,
+    top_k_final: int,
+) -> Dict[str, Any]:
+    """Faster cascaded evaluation by batching retrieval first, then light and strong.
+
+    We still call pipeline.predict per query to ensure consistent cascaded logic,
+    but retrieval k values can be tuned lower for faster runs via CLI options.
+    """
+    logger.info("[CASCADED] Batch evaluating cascaded reranking...")
+
+    predictions: List[List[Dict[str, Any]]] = []
+    scores: List[List[float]] = []
+
+    try:
+        for q in queries:
+            try:
+                results = pipeline.predict(
+                    q,
+                    top_k_retrieval=top_k_retrieval,
+                    top_k_final=top_k_final,
+                    top_k_light_reranking=top_k_light,
+                )
+                predictions.append(results)
+                scores.append([r.get("rerank_score", 0.0) for r in results])
+            except Exception as e:
+                logger.warning(f"[CASCADED] Query predict failed: {e}")
+                predictions.append([])
+                scores.append([])
+
+        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        aids_batch = [[res["aid"] for res in preds] for preds in predictions]
+        metrics = evaluator.evaluate_batch(queries, ground_truth_sets, aids_batch)
+
+        return {
+            "predictions": predictions,
+            "scores": scores,
+            "metrics": metrics or {f"precision@{k}": 0.0 for k in [1,3,5,10,20,50]},
+            "success": True,
+        }
+    except Exception as e:
+        logger.error(f"[CASCADED] Batch evaluation failed: {e}")
+        return {
+            "predictions": [],
+            "scores": [],
+            "metrics": {
+                **{f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+            },
+            "success": False,
+            "error": str(e),
+        }
+
+    
 
 def create_enhanced_report(
     tier1_results: Dict[str, Any],
@@ -913,6 +1109,150 @@ def save_enhanced_report(report: Dict[str, Any]):
         logger.error(f"[REPORT] Error saving enhanced report: {e}")
         return None
 
+
+def _parse_eval_cli_options() -> Dict[str, Any]:
+    """Parse simple CLI flags for faster eval and data control without heavy deps.
+
+    Supported flags:
+      --fast-eval / --no-fast-eval
+      --max-queries N
+      --sample-seed N
+      --prefer-source validation|train|public_test (khuyến nghị: validation)
+      --allow-fallbacks (cho phép fallback sang train/public_test nếu validation không có)
+      --topk-retrieval N
+      --topk-light N
+      --topk-final N
+    """
+    args = sys.argv[1:]
+    opts: Dict[str, Any] = {
+        "fast_eval": True,
+        "max_queries": None,
+        "sample_seed": 42,
+        "prefer_source": "validation",
+        "allow_fallbacks": False,
+        "top_k_retrieval": None,
+        "top_k_light": None,
+        "top_k_final": None,
+    }
+    for i, a in enumerate(args):
+        if a == "--fast-eval":
+            opts["fast_eval"] = True
+        elif a == "--no-fast-eval":
+            opts["fast_eval"] = False
+        elif a.startswith("--max-queries="):
+            try:
+                opts["max_queries"] = int(a.split("=", 1)[1])
+            except Exception:
+                pass
+        elif a.startswith("--sample-seed="):
+            try:
+                opts["sample_seed"] = int(a.split("=", 1)[1])
+            except Exception:
+                pass
+        elif a.startswith("--prefer-source="):
+            val = a.split("=", 1)[1].strip().lower()
+            if val in {"validation", "train", "public_test"}:
+                opts["prefer_source"] = val
+        elif a == "--allow-fallbacks":
+            opts["allow_fallbacks"] = True
+        elif a.startswith("--topk-retrieval="):
+            try:
+                opts["top_k_retrieval"] = int(a.split("=", 1)[1])
+            except Exception:
+                pass
+        elif a.startswith("--topk-light="):
+            try:
+                opts["top_k_light"] = int(a.split("=", 1)[1])
+            except Exception:
+                pass
+        elif a.startswith("--topk-final="):
+            try:
+                opts["top_k_final"] = int(a.split("=", 1)[1])
+            except Exception:
+                pass
+    return opts
+
+
+def _load_eval_data_with_fallbacks(
+    prefer: str = "validation",
+    max_queries: Optional[int] = None,
+    sample_seed: int = 42,
+    allow_fallbacks: bool = False,
+) -> Tuple[List[str], List[set], Optional[Path]]:
+    """Load evaluation data with fallbacks and optional sampling.
+
+    Order of preference (config paths): validation → train → public_test.
+    Each item is expected to have fields {"question", "relevant_aids"}. If the
+    file is in an older format, gracefully fall back by inferring from available
+    fields (e.g., answer_id) and wrapping as a single-element list.
+    """
+    def _attempt_load(path: Path) -> Optional[List[Dict[str, Any]]]:
+        try:
+            if path and path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"[EVAL] Failed to load data from {path}: {e}")
+        return None
+
+    # Only use validation by default; allow fallbacks if explicitly permitted
+    sources: List[Path] = []
+    if prefer == "validation":
+        sources = [config.VAL_SPLIT_JSON_PATH]
+        if allow_fallbacks:
+            sources.extend([config.TRAIN_JSON_PATH, config.PUBLIC_TEST_JSON_PATH])
+    elif prefer == "train":
+        sources = [config.TRAIN_JSON_PATH]
+        if allow_fallbacks:
+            sources.extend([config.VAL_SPLIT_JSON_PATH, config.PUBLIC_TEST_JSON_PATH])
+    else:
+        sources = [config.PUBLIC_TEST_JSON_PATH]
+        if allow_fallbacks:
+            sources.extend([config.VAL_SPLIT_JSON_PATH, config.TRAIN_JSON_PATH])
+
+    data = None
+    chosen_path = None
+    for p in sources:
+        data = _attempt_load(p)
+        if data:
+            chosen_path = p
+            break
+
+    if not data:
+        logger.error("[EVAL] Could not load any evaluation data from configured paths.")
+        return [], [], None
+
+    # Normalize records: ensure question + relevant_aids
+    normalized: List[Tuple[str, List[str]]] = []
+    for item in data:
+        q = item.get("question") or item.get("query")
+        if not q:
+            continue
+        rel = item.get("relevant_aids")
+        if rel is None:
+            # Try older format fallbacks
+            ans = item.get("answer_id")
+            rel = [ans] if ans else []
+        if isinstance(rel, str):
+            rel = [rel]
+        normalized.append((q, list(rel)))
+
+    if not normalized:
+        logger.error(f"[EVAL] No valid records in {chosen_path}")
+        return [], [], chosen_path
+
+    # Optional sampling for speed
+    if max_queries and len(normalized) > max_queries:
+        random.seed(sample_seed)
+        normalized = random.sample(normalized, k=max_queries)
+
+    queries = [q for q, _ in normalized]
+    ground_truth_sets = [canonicalize_aid_set(rel) for _, rel in normalized]
+
+    logger.info(
+        f"[EVAL] Using {len(queries)} queries from {chosen_path.name if chosen_path else 'unknown'} (prefer={prefer}, allow_fallbacks={allow_fallbacks})"
+    )
+    return queries, ground_truth_sets, chosen_path
 
 def display_enhanced_summary(report: Dict[str, Any]):
     """Hiển thị tóm tắt enhanced evaluation"""

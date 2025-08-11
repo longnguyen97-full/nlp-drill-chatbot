@@ -36,6 +36,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import config
 from core.logging_system import get_logger
 from core.utils.data_processing import select_top_aids_for_question
+from core.utils.aid_utils import canonicalize_aid_ascii, canonicalize_aid_list
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)
@@ -51,7 +52,12 @@ def load_processed_data():
 
     # Load aid map
     with open(config.AID_MAP_PATH, "rb") as f:
-        aid_map = pickle.load(f)
+        loaded_map = pickle.load(f)
+        # Re-key to canonical AIDs to ensure consistency across pipeline
+        try:
+            aid_map = {canonicalize_aid_ascii(k): v for k, v in loaded_map.items()}
+        except Exception:
+            aid_map = loaded_map
 
     logger.info(f"[LOAD] Loaded {len(train_data)} training samples")
     logger.info(f"[LOAD] Loaded {len(aid_map)} AIDs")
@@ -67,14 +73,17 @@ def create_initial_triplets(train_data: List[Dict], aid_map: Dict) -> List[Dict]
 
     for sample in train_data:
         question = sample.get("question")
-        relevant_aids = sample.get("relevant_aids", [])
+        # Canonicalize AIDs in training sample to align with aid_map/index
+        relevant_aids = canonicalize_aid_list(sample.get("relevant_aids", []))
 
         if not question or not relevant_aids:
             continue
 
         # Guard: if too many AIDs for a doc, pick top per lexical score to increase quality
         if len(relevant_aids) > 10:
-            relevant_aids = select_top_aids_for_question(question, list(relevant_aids), aid_map, top_k=5)
+            relevant_aids = select_top_aids_for_question(
+                question, list(relevant_aids), aid_map, top_k=5
+            )
 
         positive_contents = [aid_map.get(aid) for aid in relevant_aids if aid in aid_map]
         negative_aids_pool = [aid for aid in all_aids if aid not in relevant_aids]

@@ -13,6 +13,7 @@ import time
 from contextlib import contextmanager
 
 import config
+from core.utils.aid_utils import canonicalize_aid_ascii
 from core.logging_system import get_logger
 
 # Get logger for this module
@@ -107,7 +108,9 @@ class LegalQAPipeline:
 
                 self.faiss_index = faiss.read_index(str(config.FAISS_INDEX_PATH))
                 with open(config.INDEX_TO_AID_PATH, "r", encoding="utf-8") as f:
-                    self.index_to_aid = json.load(f)
+                    raw_index_to_aid = json.load(f)
+                    # Canonicalize AIDs while preserving order to align with FAISS indices
+                    self.index_to_aid = [canonicalize_aid_ascii(a) for a in raw_index_to_aid]
 
                 # Tang 2: Light Re-ranking (Light Reranker) - for cascaded reranking
                 if self.use_cascaded_reranking:
@@ -126,7 +129,12 @@ class LegalQAPipeline:
 
                 # Du lieu
                 with open(config.AID_MAP_PATH, "rb") as f:
-                    self.aid_map = pickle.load(f)
+                    loaded_map = pickle.load(f)
+                    # Re-key to canonical AIDs if needed for robust lookups
+                    try:
+                        self.aid_map = {canonicalize_aid_ascii(k): v for k, v in loaded_map.items()}
+                    except Exception:
+                        self.aid_map = loaded_map
 
             logger.info("Pipeline loaded successfully!")
             self.is_ready = True

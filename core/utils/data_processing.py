@@ -13,6 +13,7 @@ import random
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union, Any
 from core.logging_system import get_logger
+from core.utils.aid_utils import canonicalize_aid_ascii
 
 logger = get_logger(__name__)
 
@@ -121,9 +122,12 @@ def parse_legal_corpus(corpus_path: Path) -> List[Dict[str, str]]:
                             article_id = article.get("aid", "unknown")
 
                             if content_text:
+                                normalized_aid = canonicalize_aid_ascii(
+                                    f"{law_id}_{article_id}"
+                                )
                                 all_articles.append(
                                     {
-                                        "aid": f"{law_id}_{article_id}",
+                                        "aid": normalized_aid,
                                         "content": content_text,
                                     }
                                 )

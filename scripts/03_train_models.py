@@ -387,6 +387,7 @@ def build_faiss_index_optimized(model):
     logger.info("[FAISS] Building FAISS index...")
     try:
         from core.utils import parse_legal_corpus
+        from core.utils.aid_utils import canonicalize_aid_ascii
 
         all_articles = parse_legal_corpus(config.LEGAL_CORPUS_PATH)
         if not all_articles:
@@ -394,7 +395,8 @@ def build_faiss_index_optimized(model):
             return False
 
         documents = [article["content"] for article in all_articles]
-        aids = [article["aid"] for article in all_articles]
+        # Ensure AIDs are canonicalized before saving mapping for FAISS alignment
+        aids = [canonicalize_aid_ascii(article["aid"]) for article in all_articles]
 
         logger.info(f"[FAISS] Encoding {len(documents)} documents...")
         embeddings = model.encode(

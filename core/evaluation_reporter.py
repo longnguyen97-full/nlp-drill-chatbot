@@ -88,6 +88,8 @@ class BatchEvaluator:
             return {}
 
         from core.utils.evaluation import precision_at_k, recall_at_k, f1_at_k
+        # Import canonicalizer to ensure comparisons are consistent
+        from core.utils.aid_utils import canonicalize_aid_list, canonicalize_aid_set
 
         metrics = {}
         start_time = time.time()
@@ -105,11 +107,15 @@ class BatchEvaluator:
                         if not retrieved_aids:
                             continue
 
+                        # Canonicalize retrieved AIDs for robust equality
+                        retrieved_aids_norm = canonicalize_aid_list(retrieved_aids[:k])
+                        ground_truth_norm = list(canonicalize_aid_set(ground_truth))
+
                         precision = precision_at_k(
-                            list(ground_truth), retrieved_aids[:k], k
+                            ground_truth_norm, retrieved_aids_norm, k
                         )
-                        recall = recall_at_k(list(ground_truth), retrieved_aids[:k], k)
-                        f1 = f1_at_k(list(ground_truth), retrieved_aids[:k], k)
+                        recall = recall_at_k(ground_truth_norm, retrieved_aids_norm, k)
+                        f1 = f1_at_k(ground_truth_norm, retrieved_aids_norm, k)
 
                         precision_values.append(precision)
                         recall_values.append(recall)
@@ -153,7 +159,7 @@ class EvaluationReporter:
             reports_dir: Directory to save reports (default: reports/)
         """
         self.reports_dir = reports_dir or Path("reports")
-        self.reports_dir.mkdir(exist_ok=True)
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger(__name__)
 
     def validate_metrics(self, metrics: Dict[str, float]) -> bool:
@@ -179,6 +185,8 @@ class EvaluationReporter:
         reranking_metrics: Dict[str, float],
         per_query_results: List[Dict],
         metadata: Dict[str, Any],
+        cascaded_metrics: Optional[Dict[str, float]] = None,
+        light_metrics: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
         Create a comprehensive evaluation report with validation.
@@ -201,6 +209,13 @@ class EvaluationReporter:
             self.logger.error("Invalid reranking metrics")
             return {}
 
+        if cascaded_metrics is not None and not self.validate_metrics(cascaded_metrics):
+            self.logger.error("Invalid cascaded metrics")
+            return {}
+        if light_metrics is not None and not self.validate_metrics(light_metrics):
+            self.logger.error("Invalid light-tier metrics")
+            return {}
+
         if not isinstance(per_query_results, list):
             self.logger.error("Per query results must be a list")
             return {}
@@ -215,8 +230,10 @@ class EvaluationReporter:
                 "summary": {
                     "retrieval_metrics": retrieval_metrics,
                     "reranking_metrics": reranking_metrics,
+                    **({"cascaded_metrics": cascaded_metrics} if cascaded_metrics is not None else {}),
+                    **({"light_metrics": light_metrics} if light_metrics is not None else {}),
                     "overall_performance": self._calculate_overall_performance(
-                        retrieval_metrics, reranking_metrics
+                        retrieval_metrics, reranking_metrics, cascaded_metrics, light_metrics
                     ),
                 },
                 "detailed_results": {
@@ -238,9 +255,7 @@ class EvaluationReporter:
             report["summary"]["tier1_metrics"] = report["summary"][
                 "retrieval_metrics"
             ]
-            report["summary"]["tier3_metrics"] = report["summary"][
-                "reranking_metrics"
-            ]
+            report["summary"]["tier3_metrics"] = report["summary"]["reranking_metrics"]
 
             return report
 
@@ -250,28 +265,45 @@ class EvaluationReporter:
             return {}
 
     def _calculate_overall_performance(
-        self, retrieval_metrics: Dict[str, float], reranking_metrics: Dict[str, float]
+        self,
+        retrieval_metrics: Dict[str, float],
+        reranking_metrics: Dict[str, float],
+        cascaded_metrics: Optional[Dict[str, float]] = None,
+        light_metrics: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
         """Calculate overall performance indicators with error handling."""
         overall = {}
 
         try:
-            # Average precision@1 across retrieval and reranking
+            # Representative scores
             retrieval_p1 = retrieval_metrics.get("precision@1", 0.0)
             reranking_p1 = reranking_metrics.get("precision@1", 0.0)
             overall["avg_precision@1"] = (retrieval_p1 + reranking_p1) / 2
 
-            # Average recall@10 across retrieval and reranking
             retrieval_r10 = retrieval_metrics.get("recall@10", 0.0)
             reranking_r10 = reranking_metrics.get("recall@10", 0.0)
             overall["avg_recall@10"] = (retrieval_r10 + reranking_r10) / 2
 
-            # Improvement from retrieval to reranking
+            # Improvements
             overall["reranking_improvement"] = reranking_p1 - retrieval_p1
-
-            # Additional metrics
             overall["retrieval_quality"] = retrieval_metrics.get("f1@5", 0.0)
             overall["reranking_quality"] = reranking_metrics.get("f1@5", 0.0)
+
+            if cascaded_metrics is not None:
+                cascaded_p1 = cascaded_metrics.get("precision@1", 0.0)
+                cascaded_r10 = cascaded_metrics.get("recall@10", 0.0)
+                overall["cascaded_precision@1"] = cascaded_p1
+                overall["cascaded_recall@10"] = cascaded_r10
+                overall["cascaded_quality_f1@5"] = cascaded_metrics.get("f1@5", 0.0)
+                # incremental gains
+                overall["improvement_tier3_over_tier1"] = reranking_p1 - retrieval_p1
+                overall["improvement_cascaded_over_tier3"] = cascaded_p1 - reranking_p1
+                overall["improvement_cascaded_over_tier1"] = cascaded_p1 - retrieval_p1
+
+            if light_metrics is not None:
+                light_p1 = light_metrics.get("precision@1", 0.0)
+                overall["light_precision@1"] = light_p1
+                overall["improvement_tier2_over_tier1"] = light_p1 - retrieval_p1
 
         except Exception as e:
             self.logger.error(f"Error calculating overall performance: {e}")
@@ -455,6 +487,18 @@ class EvaluationReporter:
                     f"  P@{k}: {precision:.4f}, R@{k}: {recall:.4f}, F1@{k}: {f1:.4f}"
                 )
 
+            # Display cascaded metrics if available
+            cascaded_metrics = summary.get("cascaded_metrics", {})
+            if cascaded_metrics:
+                self.logger.info("CASCADED METRICS (Light + Strong):")
+                for k in [1, 3, 5, 10]:
+                    precision = cascaded_metrics.get(f"precision@{k}", 0.0)
+                    recall = cascaded_metrics.get(f"recall@{k}", 0.0)
+                    f1 = cascaded_metrics.get(f"f1@{k}", 0.0)
+                    self.logger.info(
+                        f"  P@{k}: {precision:.4f}, R@{k}: {recall:.4f}, F1@{k}: {f1:.4f}"
+                    )
+
             # Display overall performance
             self.logger.info("OVERALL PERFORMANCE:")
             self.logger.info(
@@ -466,6 +510,14 @@ class EvaluationReporter:
             self.logger.info(
                 f"  Reranking Improvement: {overall.get('reranking_improvement', 0.0):.4f}"
             )
+            if 'cascaded_precision@1' in overall:
+                self.logger.info(
+                    f"  Cascaded Precision@1: {overall.get('cascaded_precision@1', 0.0):.4f}"
+                )
+            if 'improvement_cascaded_over_tier3' in overall:
+                self.logger.info(
+                    f"  Cascaded over Tier3 Improvement (P@1): {overall.get('improvement_cascaded_over_tier3', 0.0):.4f}"
+                )
 
             # Display detailed statistics
             self.logger.info("DETAILED STATISTICS:")

@@ -48,6 +48,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import config
 from core.logging_system import get_logger
 from core.pipeline import LegalQAPipeline
+from core.utils.aid_utils import canonicalize_aid_list, canonicalize_aid_set
 from core.evaluation_reporter import EvaluationReporter, BatchEvaluator
 
 # Setup logging
@@ -80,14 +81,20 @@ def run_enhanced_evaluation():
             val_data = json.load(f)
 
         queries = [item["question"] for item in val_data]
-        ground_truth_sets = [set(item["relevant_aids"]) for item in val_data]
+        # Canonicalize ground-truth AIDs to align with index/aid_map
+        ground_truth_sets = [
+            canonicalize_aid_set(item.get("relevant_aids", [])) for item in val_data
+        ]
 
         # Sanity check: Coverage of ground-truth AIDs in current index
         try:
             index_to_aid_path = config.INDEX_TO_AID_PATH
             if index_to_aid_path.exists():
                 with open(index_to_aid_path, "r", encoding="utf-8") as f:
-                    index_aids = set(json.load(f))
+                    from core.utils.aid_utils import canonicalize_aid_ascii
+                    index_aids = set(
+                        canonicalize_aid_ascii(a) for a in json.load(f)
+                    )
                 total_gt = sum(len(s) for s in ground_truth_sets)
                 present = sum(
                     1 for s in ground_truth_sets for aid in s if aid in index_aids
@@ -116,29 +123,83 @@ def run_enhanced_evaluation():
         logger.info("[EVAL] === TIER 1: Bi-Encoder Retrieval ===")
         tier1_results = evaluate_tier1_retrieval(pipeline, queries, ground_truth_sets)
 
-        # Tier 3: Cross-Encoder Reranking
-        logger.info("[EVAL] === TIER 3: Cross-Encoder Reranking ===")
-        tier3_results = evaluate_tier3_reranking(pipeline, queries, ground_truth_sets)
+        # Tier 2: Light Reranker (only)
+        logger.info("[EVAL] === TIER 2: Light Reranker (only) ===")
+        tier2_light_results = evaluate_tier2_light_reranking(
+            pipeline, queries, ground_truth_sets
+        )
+
+        # Tier 3 (Strong Only): Cross-Encoder Reranking WITHOUT Light Reranker
+        logger.info(
+            "[EVAL] === TIER 3 (Strong Only): Cross-Encoder Reranking (no Light Reranker) ==="
+        )
+        tier3_strong_only_results = evaluate_tier3_reranking_strong_only(
+            pipeline, queries, ground_truth_sets
+        )
+
+        # Cascaded (Tier 2 + Tier 3): Light Reranker + Cross-Encoder Reranking
+        logger.info(
+            "[EVAL] === CASCADED (Tier 2 + Tier 3): Light Reranker + Cross-Encoder ==="
+        )
+        cascaded_results = evaluate_cascaded_reranking(
+            pipeline, queries, ground_truth_sets
+        )
 
         # 4. Xây per-query results phù hợp reporter
         logger.info("[EVAL] Building per-query detailed results...")
         per_query_results = []
         for i, (query, gt_set) in enumerate(zip(queries, ground_truth_sets)):
             try:
-                ret_aids = tier1_results["predictions"][i] if i < len(tier1_results["predictions"]) else []
-                rerank_results = tier3_results["predictions"][i] if i < len(tier3_results["predictions"]) else []
-                ret_scores = []
-                rerank_scores = [res.get("rerank_score", 0.0) for res in rerank_results]
+                ret_aids = (
+                    canonicalize_aid_list(tier1_results["predictions"][i])
+                    if i < len(tier1_results["predictions"])
+                    else []
+                )
+                light_only_aids = (
+                    tier2_light_results["predictions"][i]
+                    if i < len(tier2_light_results["predictions"]) \
+                    else []
+                )
+                strong_only_results = (
+                    tier3_strong_only_results["predictions"][i]
+                    if i < len(tier3_strong_only_results["predictions"])
+                    else []
+                )
+                cascaded_results_i = (
+                    cascaded_results["predictions"][i]
+                    if i < len(cascaded_results["predictions"])
+                    else []
+                )
+                # Include retrieval scores captured in Tier 1
+                ret_scores = (
+                    tier1_results["scores"][i]
+                    if i < len(tier1_results.get("scores", []))
+                    else []
+                )
+                # Light-only has no explicit scores; use placeholders
+                light_only_scores = []
+                strong_only_scores = [res.get("rerank_score", 0.0) for res in strong_only_results]
+                cascaded_scores = [res.get("rerank_score", 0.0) for res in cascaded_results_i]
 
                 # Per-query quick metrics
                 ret_precision = (len(set(ret_aids) & gt_set) / len(ret_aids)) if ret_aids else 0.0
                 ret_recall = (len(set(ret_aids) & gt_set) / len(gt_set)) if gt_set else 0.0
                 ret_f1 = (2 * ret_precision * ret_recall / (ret_precision + ret_recall)) if (ret_precision + ret_recall) > 0 else 0.0
 
-                rerank_aids = [res.get("aid") for res in rerank_results]
-                rerank_precision = (len(set(rerank_aids) & gt_set) / len(rerank_aids)) if rerank_aids else 0.0
-                rerank_recall = (len(set(rerank_aids) & gt_set) / len(gt_set)) if gt_set else 0.0
-                rerank_f1 = (2 * rerank_precision * rerank_recall / (rerank_precision + rerank_recall)) if (rerank_precision + rerank_recall) > 0 else 0.0
+                strong_only_aids = canonicalize_aid_list([res.get("aid") for res in strong_only_results])
+                strong_only_precision = (len(set(strong_only_aids) & gt_set) / len(strong_only_aids)) if strong_only_aids else 0.0
+                strong_only_recall = (len(set(strong_only_aids) & gt_set) / len(gt_set)) if gt_set else 0.0
+                strong_only_f1 = (2 * strong_only_precision * strong_only_recall / (strong_only_precision + strong_only_recall)) if (strong_only_precision + strong_only_recall) > 0 else 0.0
+
+                light_only_aids_norm = canonicalize_aid_list(light_only_aids)
+                light_only_precision = (len(set(light_only_aids_norm) & gt_set) / len(light_only_aids_norm)) if light_only_aids_norm else 0.0
+                light_only_recall = (len(set(light_only_aids_norm) & gt_set) / len(gt_set)) if gt_set else 0.0
+                light_only_f1 = (2 * light_only_precision * light_only_recall / (light_only_precision + light_only_recall)) if (light_only_precision + light_only_recall) > 0 else 0.0
+
+                cascaded_aids = canonicalize_aid_list([res.get("aid") for res in cascaded_results_i])
+                cascaded_precision = (len(set(cascaded_aids) & gt_set) / len(cascaded_aids)) if cascaded_aids else 0.0
+                cascaded_recall = (len(set(cascaded_aids) & gt_set) / len(gt_set)) if gt_set else 0.0
+                cascaded_f1 = (2 * cascaded_precision * cascaded_recall / (cascaded_precision + cascaded_recall)) if (cascaded_precision + cascaded_recall) > 0 else 0.0
 
                 per_query_results.append(
                     {
@@ -154,18 +215,56 @@ def run_enhanced_evaluation():
                             "f1": ret_f1,
                             "found_relevant": len(set(ret_aids) & gt_set),
                         },
-                        "reranking_results": {
-                            "aids": rerank_aids,
-                            "scores": rerank_scores,
-                            "precision": rerank_precision,
-                            "recall": rerank_recall,
-                            "f1": rerank_f1,
-                            "found_relevant": len(set(rerank_aids) & gt_set),
+                        "tier3_strong_only_results": {
+                            "aids": strong_only_aids,
+                            "scores": strong_only_scores,
+                            "precision": strong_only_precision,
+                            "recall": strong_only_recall,
+                            "f1": strong_only_f1,
+                            "found_relevant": len(set(strong_only_aids) & gt_set),
+                        },
+                        "tier2_light_results": {
+                            "aids": light_only_aids_norm,
+                            "scores": light_only_scores,
+                            "precision": light_only_precision,
+                            "recall": light_only_recall,
+                            "f1": light_only_f1,
+                            "found_relevant": len(set(light_only_aids_norm) & gt_set),
+                        },
+                        "cascaded_results": {
+                            "aids": cascaded_aids,
+                            "scores": cascaded_scores,
+                            "precision": cascaded_precision,
+                            "recall": cascaded_recall,
+                            "f1": cascaded_f1,
+                            "found_relevant": len(set(cascaded_aids) & gt_set),
                         },
                         "improvement": {
-                            "precision_improvement": rerank_precision - ret_precision,
-                            "recall_improvement": rerank_recall - ret_recall,
-                            "f1_improvement": rerank_f1 - ret_f1,
+                            "tier2_over_tier1": {
+                                "precision": light_only_precision - ret_precision,
+                                "recall": light_only_recall - ret_recall,
+                                "f1": light_only_f1 - ret_f1,
+                            },
+                            "tier3_over_tier1": {
+                                "precision": strong_only_precision - ret_precision,
+                                "recall": strong_only_recall - ret_recall,
+                                "f1": strong_only_f1 - ret_f1,
+                            },
+                            "cascaded_over_tier2": {
+                                "precision": cascaded_precision - light_only_precision,
+                                "recall": cascaded_recall - light_only_recall,
+                                "f1": cascaded_f1 - light_only_f1,
+                            },
+                            "cascaded_over_tier3": {
+                                "precision": cascaded_precision - strong_only_precision,
+                                "recall": cascaded_recall - strong_only_recall,
+                                "f1": cascaded_f1 - strong_only_f1,
+                            },
+                            "cascaded_over_tier1": {
+                                "precision": cascaded_precision - ret_precision,
+                                "recall": cascaded_recall - ret_recall,
+                                "f1": cascaded_f1 - ret_f1,
+                            },
                         },
                         "success": True,
                     }
@@ -180,12 +279,15 @@ def run_enhanced_evaluation():
             "timestamp": datetime.now().isoformat(),
             "evaluation_type": "enhanced_comprehensive",
             "total_queries": len(queries),
+            "aid_normalization": "canonical_ascii",
         }
         report = reporter.create_comprehensive_report(
             retrieval_metrics=tier1_results["metrics"],
-            reranking_metrics=tier3_results["metrics"],
+            reranking_metrics=tier3_strong_only_results["metrics"],
             per_query_results=per_query_results,
             metadata=metadata,
+            cascaded_metrics=cascaded_results["metrics"],
+            light_metrics=tier2_light_results["metrics"],
         )
 
         reporter.display_summary(report)
@@ -352,6 +454,212 @@ def evaluate_tier3_reranking(
             "error": str(e),
         }
 
+
+def evaluate_tier2_light_reranking(
+    pipeline: LegalQAPipeline, queries: List[str], ground_truth_sets: List[set]
+) -> Dict[str, Any]:
+    """Đánh giá Tầng 2 - Light Reranker (áp dụng rerank_light lên retrieval)"""
+    logger.info("[TIER2] Evaluating Light Reranker performance...")
+
+    predictions = []  # list of light-reranked AIDs per query
+    metrics = {}
+
+    try:
+        for i, q in enumerate(queries):
+            if i % 10 == 0:
+                logger.info(f"[TIER2] Processing query {i+1}/{len(queries)}")
+
+            try:
+                retrieved_aids, distances = pipeline.retrieve(q, config.TOP_K_RETRIEVAL)
+                light_aids, _ = pipeline.rerank_light(
+                    q,
+                    retrieved_aids,
+                    distances,
+                    top_k_light=config.TOP_K_LIGHT_RERANKING,
+                )
+                predictions.append(light_aids)
+            except Exception as e:
+                logger.error(f"[TIER2] Error in light reranking for query {i}: {e}")
+                predictions.append([])
+
+        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        try:
+            computed = (
+                evaluator.evaluate_batch(queries, ground_truth_sets, predictions)
+                if predictions
+                else {}
+            )
+        except Exception as e:
+            logger.error(f"[TIER2] Error computing metrics: {e}")
+            computed = {}
+
+        if not computed:
+            logger.warning("[TIER2] Empty results, using default metrics")
+            metrics = {f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]}
+            metrics.update({f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+            metrics.update({f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+        else:
+            metrics = computed
+
+        return {
+            "predictions": predictions,
+            "scores": [],  # light reranker scores are not exposed here
+            "metrics": metrics,
+            "success": True,
+        }
+
+    except Exception as e:
+        logger.error(f"[TIER2] Tier 2 evaluation failed: {e}")
+        return {
+            "predictions": [],
+            "scores": [],
+            "metrics": {
+                **{f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+            },
+            "success": False,
+            "error": str(e),
+        }
+
+def evaluate_tier3_reranking_strong_only(
+    pipeline: LegalQAPipeline, queries: List[str], ground_truth_sets: List[set]
+) -> Dict[str, Any]:
+    """Đánh giá Tầng 3 - Strong-only Reranking (KHÔNG dùng Light Reranker)"""
+    logger.info("[TIER3-STRONG] Evaluating strong-only reranking performance...")
+
+    predictions = []
+    scores = []
+    metrics = {}
+
+    try:
+        for i, q in enumerate(queries):
+            if i % 10 == 0:
+                logger.info(f"[TIER3-STRONG] Processing query {i+1}/{len(queries)}")
+
+            try:
+                retrieved_aids, distances = pipeline.retrieve(q, config.TOP_K_RETRIEVAL)
+                results = pipeline.rerank(q, retrieved_aids, distances)
+                predictions.append(results)
+                scores.append([res.get("rerank_score", 0.0) for res in results])
+            except Exception as e:
+                logger.error(f"[TIER3-STRONG] Error in reranking for query {i}: {e}")
+                predictions.append([])
+                scores.append([])
+
+        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        aids_batch = [[res["aid"] for res in preds] for preds in predictions]
+
+        try:
+            computed = (
+                evaluator.evaluate_batch(queries, ground_truth_sets, aids_batch)
+                if aids_batch
+                else {}
+            )
+        except Exception as e:
+            logger.error(f"[TIER3-STRONG] Error computing metrics: {e}")
+            computed = {}
+
+        if not computed:
+            logger.warning("[TIER3-STRONG] Empty results, using default metrics")
+            metrics = {f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]}
+            metrics.update({f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+            metrics.update({f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+        else:
+            metrics = computed
+
+        return {
+            "predictions": predictions,
+            "scores": scores,
+            "metrics": metrics,
+            "success": True,
+        }
+
+    except Exception as e:
+        logger.error(f"[TIER3-STRONG] Evaluation failed: {e}")
+        return {
+            "predictions": [],
+            "scores": [],
+            "metrics": {
+                **{f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+            },
+            "success": False,
+            "error": str(e),
+        }
+
+
+def evaluate_cascaded_reranking(
+    pipeline: LegalQAPipeline, queries: List[str], ground_truth_sets: List[set]
+) -> Dict[str, Any]:
+    """Đánh giá Cascaded: Light Reranker + Strong Reranker"""
+    logger.info("[CASCADED] Evaluating cascaded reranking performance...")
+
+    predictions = []
+    scores = []
+    metrics = {}
+
+    try:
+        for i, q in enumerate(queries):
+            if i % 10 == 0:
+                logger.info(f"[CASCADED] Processing query {i+1}/{len(queries)}")
+
+            try:
+                results = pipeline.predict(
+                    q,
+                    top_k_retrieval=config.TOP_K_RETRIEVAL,
+                    top_k_final=10,
+                    top_k_light_reranking=config.TOP_K_LIGHT_RERANKING,
+                )
+                predictions.append(results)
+                scores.append([res.get("rerank_score", 0.0) for res in results])
+            except Exception as e:
+                logger.error(f"[CASCADED] Error in reranking for query {i}: {e}")
+                predictions.append([])
+                scores.append([])
+
+        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        aids_batch = [[res["aid"] for res in preds] for preds in predictions]
+
+        try:
+            computed = (
+                evaluator.evaluate_batch(queries, ground_truth_sets, aids_batch)
+                if aids_batch
+                else {}
+            )
+        except Exception as e:
+            logger.error(f"[CASCADED] Error computing metrics: {e}")
+            computed = {}
+
+        if not computed:
+            logger.warning("[CASCADED] Empty results, using default metrics")
+            metrics = {f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]}
+            metrics.update({f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+            metrics.update({f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]})
+        else:
+            metrics = computed
+
+        return {
+            "predictions": predictions,
+            "scores": scores,
+            "metrics": metrics,
+            "success": True,
+        }
+
+    except Exception as e:
+        logger.error(f"[CASCADED] Evaluation failed: {e}")
+        return {
+            "predictions": [],
+            "scores": [],
+            "metrics": {
+                **{f"precision@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"recall@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+                **{f"f1@{k}": 0.0 for k in [1, 3, 5, 10, 20, 50]},
+            },
+            "success": False,
+            "error": str(e),
+        }
 
 def create_enhanced_report(
     tier1_results: Dict[str, Any],

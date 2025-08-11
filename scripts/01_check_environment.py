@@ -26,6 +26,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import config
 from core.logging_system import get_logger
 from core.utils.data_processing import select_top_aids_for_question, rank_aids_for_question
+from core.utils.aid_utils import canonicalize_aid_ascii
 
 # Sử dụng logger đã được setup từ pipeline chính
 logger = get_logger(__name__)
@@ -266,13 +267,13 @@ def build_maps_optimized():
             article_id = item["aid"]
             content = item["content_Article"]
 
-            # Create AID format: law_id_article_id
-            aid = f"{law_id}_{article_id}"
+            # Create normalized AID format: law_id_article_id (canonicalized)
+            aid = canonicalize_aid_ascii(f"{law_id}_{article_id}")
 
-            # Store in aid_map
+            # Store in aid_map with canonical AID key
             aid_map[aid] = content
 
-            # Store mapping from doc_id to AIDs
+            # Store mapping from doc_id to AIDs (canonical)
             doc_id_to_aids[doc_id_str].append(aid)
             total_articles += 1
 

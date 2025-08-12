@@ -7,7 +7,7 @@ Text augmentation utilities for training data enhancement.
 """
 
 from typing import List
-from core.logging_system import get_logger
+from core.services.logging_service import get_logger
 
 logger = get_logger(__name__)
 

@@ -1,1915 +1,327 @@
-# 🏛️ LawBot - Hệ thống Hỏi-Đáp Pháp luật Thông minh
+# Hệ thống Hỏi-đáp Pháp luật (Legal QA)
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-8.1-green.svg)](https://github.com/lawbot-team/lawbot)
-[![Pipeline](https://img.shields.io/badge/pipeline-cascaded--reranking-orange.svg)](https://github.com/lawbot-team/lawbot)
 
-> **Hệ thống AI hỏi-đáp pháp luật tiên tiến cho Việt Nam**  
-> **Phiên bản v8.1: Tối ưu hóa toàn diện với kiến trúc 3 tầng thông minh**
+Dự án này xây dựng một hệ thống Hỏi-đáp (Question Answering) cho lĩnh vực pháp luật Việt Nam, sử dụng các mô hình ngôn ngữ lớn (Large Language Models) và kiến trúc tìm kiếm-xếp hạng (retrieval-reranking) 3 tầng tiên tiến.
 
 ---
 
-## 📋 **Mục lục**
+## Mục lục
 
-- [🎯 Tổng quan](#-tổng-quan)
-- [🚀 Bắt đầu nhanh](#-bắt-đầu-nhanh)
-- [💡 Cách sử dụng](#-cách-sử-dụng)
-- [🧠 Kiến trúc hệ thống](#-kiến-trúc-hệ-thống)
-- [⚙️ Cài đặt và cấu hình](#️-cài-đặt-và-cấu-hình)
-- [🔄 Quy trình huấn luyện](#-quy-trình-huấn-luyện)
-- [📊 Đánh giá hiệu suất](#-đánh-giá-hiệu-suất)
-- [🛠️ Phát triển và bảo trì](#️-phát-triển-và-bảo-trì)
-- [❓ Hỏi đáp](#-hỏi-đáp)
-
----
-
-## 🎯 **Tổng quan**
-
-### **LawBot là gì?**
-
-LawBot là một hệ thống AI hỏi-đáp pháp luật được thiết kế đặc biệt cho pháp luật Việt Nam. Hệ thống sử dụng công nghệ AI tiên tiến để trả lời các câu hỏi về pháp luật một cách chính xác và nhanh chóng.
-
-### **Tính năng nổi bật**
-
-✨ **Kiến trúc 3 tầng thông minh**
-- **Tầng 1**: Tìm kiếm rộng (500 ứng viên)
-- **Tầng 2**: Lọc nhanh (50 ứng viên)  
-- **Tầng 3**: Thẩm định chuyên sâu (5 kết quả cuối)
-
-🧠 **AI chuyên biệt cho pháp luật**
-- Domain-Adaptive Pre-training (DAPT)
-- PhoBERT-Law model chuyên môn hóa
-- Ensemble learning với nhiều model
-
-⚡ **Hiệu suất tối ưu**
-- Thời gian phản hồi: ~0.5 giây
-- Độ chính xác: >90%
-- GPU acceleration tự động
-
-### **Khi nào sử dụng?**
-
-✅ **Phù hợp:**
-- Tìm kiếm điều luật cụ thể
-- Tra cứu quy định pháp luật
-- So sánh văn bản pháp luật
-- Tìm hiểu quyền và nghĩa vụ
-
-❌ **Không phù hợp:**
-- Tư vấn pháp lý chuyên sâu
-- Thay thế luật sư
-- Câu hỏi không liên quan pháp luật
+- [Kiến trúc hệ thống](#kiến-trúc-hệ-thống)
+- [Cấu trúc thư mục](#cấu-trúc-thư-mục)
+- [Cài đặt](#cài-đặt)
+- [Quy trình thực thi](#quy-trình-thực-thi)
+  - [Chế độ thực thi: Fast vs Quality](#chế-độ-thực-thi-fast-vs-quality)
+  - [Bước 1: Chuẩn bị môi trường & Dữ liệu](#bước-1-chuẩn-bị-môi-trường--dữ-liệu)
+  - [Bước 2: Huấn luyện Pipeline](#bước-2-huấn-luyện-pipeline)
+  - [Bước 3: Đánh giá Pipeline](#bước-3-đánh-giá-pipeline)
+  - [Chạy toàn bộ Pipeline](#chạy-toàn-bộ-pipeline)
+- [Chạy giao diện Demo](#chạy-giao-diện-demo)
+- [Luồng xử lý & Kỹ thuật chi tiết](#luồng-xử-lý--kỹ-thuật-chi-tiết)
+  - [Luồng xử lý câu hỏi (Inference Flow)](#1-luồng-xử-lý-câu-hỏi-inference-flow)
+  - [Luồng dữ liệu & huấn luyện (Data & Training Flow)](#2-luồng-dữ-liệu--huấn-luyện-data--training-flow)
+  - [Giải thích Kỹ thuật Chi tiết](#3-giải-thích-kỹ-thuật-chi-tiết)
+  - [Kỹ thuật Tối ưu Hóa Nâng cao (Unsupervised Domain Adaptation)](#4-kỹ-thuật-tối-ưu-hóa-nâng-cao-unsupervised-domain-adaptation)
+- [Dọn dẹp](#dọn-dẹp)
 
 ---
 
-## 🚀 **Bắt đầu nhanh**
+## Kiến trúc hệ thống
 
-### **Bước 1: Cài đặt môi trường**
+Hệ thống được xây dựng theo kiến trúc 3 tầng để tối ưu giữa tốc độ và độ chính xác:
 
-```bash
-# Clone repository
-git clone https://github.com/lawbot-team/lawbot.git
-cd lawbot
+1.  **Tầng 1 - Bi-Encoder Retrieval (Tìm kiếm ứng viên):**
+    *   **Mô hình:** `bkai-foundation-models/vietnamese-bi-encoder`
+    *   **Công nghệ:** Sử dụng FAISS để tạo index vector hóa, giúp tìm kiếm nhanh hàng triệu văn bản pháp luật để tìm ra các ứng viên tiềm năng nhất.
 
-# Tạo môi trường ảo
-python -m venv venv
+2.  **Tầng 2 - Light Reranker (Lọc nhanh):**
+    *   **Mô hình:** Một Cross-Encoder hạng nhẹ.
+    *   **Mục đích:** Nhanh chóng lọc và xếp hạng lại các ứng viên từ Tầng 1, loại bỏ các kết quả nhiễu và chỉ giữ lại những kết quả chất lượng cao cho tầng cuối.
 
-# Kích hoạt môi trường
-# Windows:
-venv\Scripts\activate
-# Linux/Mac:
-source venv/bin/activate
+3.  **Tầng 3 - Cross-Encoder Reranking (Xếp hạng chính xác):**
+    *   **Mô hình:** `vinai/phobert-base-v2` (hoặc các mô hình lớn hơn).
+    *   **Mục đích:** Sử dụng một mô hình Cross-Encoder mạnh mẽ để phân tích sâu mối quan hệ giữa câu hỏi và từng văn bản luật, đưa ra xếp hạng cuối cùng với độ chính xác cao nhất.
 
-# Cài đặt dependencies
-pip install -r requirements.txt
+## Cấu trúc thư mục
+
+```
+nlp-drill-chatbot/
+├── app/                  # Mã nguồn giao diện Streamlit
+├── core/                 # Các thành phần cốt lõi (pipeline, retrieval, reranking)
+│   ├── services/         # Các dịch vụ (logging, evaluation)
+├── scripts/              # Các script để chạy từng bước của pipeline
+├── data/                 # (Cần tự tạo) Chứa dữ liệu thô và đã xử lý
+├── models/               # (Tự động tạo) Chứa các mô hình đã huấn luyện
+├── indexes/              # (Tự động tạo) Chứa FAISS index
+├── reports/              # (Tự động tạo) Chứa báo cáo đánh giá
+├── logs/                 # (Tự động tạo) Chứa file log
+├── run_pipeline.py       # Script chính để điều phối toàn bộ pipeline
+├── requirements.txt      # Các thư viện cần thiết
+└── README.md             # File hướng dẫn
 ```
 
-### **Bước 2: Chuẩn bị dữ liệu**
+## Cài đặt
 
-Đảm bảo bạn có các file dữ liệu sau trong thư mục `data/raw/`:
-- `legal_corpus.json` - Kho văn bản pháp luật
-- `train.json` - Dữ liệu training
-- `public_test.json` - Dữ liệu test
+1.  **Clone repository:**
+    ```bash
+    git clone https://your-repository-url.git
+    cd nlp-drill-chatbot
+    ```
 
-### **Bước 3: Chạy pipeline huấn luyện**
+2.  **Tạo môi trường ảo (khuyến khích):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # Trên Windows: venv\Scripts\activate
+    ```
+
+3.  **Cài đặt các thư viện cần thiết:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+## Quy trình thực thi
+
+Bạn có thể chạy từng bước riêng lẻ hoặc chạy toàn bộ pipeline bằng một câu lệnh duy nhất.
+
+### Chế độ thực thi: Fast vs Quality
+
+Hệ thống hỗ trợ 2 chế độ để tối ưu cho các mục đích khác nhau, được điều khiển bằng cờ `--mode`:
+
+-   **`--mode fast` (Mặc định khi phát triển):**
+    -   **Khi nào dùng:** Khi phát triển, gỡ lỗi hoặc chạy thử nghiệm nhanh.
+    -   **Đặc điểm:** Sử dụng ít dữ liệu hơn, số epochs ít, batch size nhỏ. Huấn luyện nhanh nhưng độ chính xác không phải là tốt nhất.
+
+-   **`--mode quality` (Mặc định khi chạy production):**
+    -   **Khi nào dùng:** Khi huấn luyện mô hình cuối cùng để triển khai hoặc để có kết quả đánh giá chính xác nhất.
+    -   **Đặc điểm:** Sử dụng toàn bộ dữ liệu, số epochs nhiều hơn, cấu hình tối ưu cho chất lượng. Thời gian huấn luyện sẽ lâu hơn đáng kể.
+
+### Bước 1: Chuẩn bị môi trường & Dữ liệu
+
+Trước tiên, hãy đảm bảo bạn đã tải và đặt các file dữ liệu vào thư mục `data/raw/`:
+- `legal_corpus.json`
+- `train.json`
+- `public_test.json`
+
+Chạy script sau để chuẩn bị môi trường và xử lý dữ liệu.
 
 ```bash
-# Chạy toàn bộ pipeline với chế độ chất lượng (QUALITY)
-python run_pipeline.py --mode quality
+python scripts/01_prepare_environment.py --mode fast
+python scripts/02_prepare_data.py --mode fast
+```
+*Lưu ý: Thay `--mode fast` bằng `--mode quality` nếu bạn muốn xử lý dữ liệu cho chế độ chất lượng cao.*
 
-# Chạy nhanh để kiểm thử (FAST), bỏ qua DAPT
-python run_pipeline.py --mode fast --no-dapt
+### Bước 2: Huấn luyện Pipeline
 
-# Chạy từ bước cụ thể (ví dụ bắt đầu từ bước 03)
-python run_pipeline.py --start-step 03 --mode fast
+Script này sẽ huấn luyện các mô hình Bi-Encoder, Cross-Encoder và xây dựng FAISS index.
 
-# Xem danh sách các bước và trạng thái checkpoint
-python run_pipeline.py --show-steps
-
-# Xoá checkpoint để chạy lại từ đầu
-python run_pipeline.py --clear-checkpoint
+```bash
+python scripts/03_train_pipeline.py --mode fast
 ```
 
-Lưu ý:
-- `--mode fast|quality` ghi đè chế độ hiệu năng chỉ cho lần chạy hiện tại (không cần đổi biến môi trường).
-- Bạn có thể kiểm tra cấu hình hiện tại bằng:
-  ```bash
-  python -c "import config; config.print_config_summary()"
-  ```
+### Bước 3: Đánh giá Pipeline
 
-### **Bước 4: Khởi động ứng dụng**
+Sau khi huấn luyện, chạy script này để đánh giá hiệu suất của hệ thống trên tập dữ liệu kiểm thử.
 
 ```bash
-# Khởi động giao diện web
-streamlit run app/app.py
-
-# Truy cập: http://localhost:8501
+python scripts/04_evaluate_pipeline.py --mode fast
 ```
+Báo cáo chi tiết sẽ được lưu trong thư mục `reports/`.
 
----
+### Chạy toàn bộ Pipeline
 
-## ⚡ **Chế độ hiệu năng (Performance Modes)**
+Để đơn giản hóa, bạn có thể sử dụng script `run_pipeline.py` để thực thi tất cả các bước trên một cách tuần tự. Script này cũng hỗ trợ tiếp tục chạy từ bước bị lỗi (`--resume`).
 
-Hệ thống hỗ trợ 2 chế độ:
-- **FAST**: ưu tiên tốc độ để kiểm thử nhanh (epochs ít, batch nhỏ, eval ít).
-- **QUALITY**: ưu tiên chất lượng mô hình (epochs/batch lớn hơn, eval nhiều hơn).
+#### Chạy Pipeline
 
-Có 2 cách chọn chế độ:
-
-1) Ghi đè bằng cờ `--mode` khi chạy pipeline (khuyến nghị)
 ```bash
+# Chạy toàn bộ pipeline ở chế độ FAST
 python run_pipeline.py --mode fast
+
+# Chạy toàn bộ pipeline ở chế độ QUALITY (sẽ mất nhiều thời gian)
 python run_pipeline.py --mode quality
 ```
 
-2) Dùng script chuyển mode (ảnh hưởng biến môi trường, hữu ích cho các tiến trình mới)
-```bash
-# Chuyển sang FAST cho phiên hiện tại và đặt vĩnh viễn (Windows dùng setx)
-python switch_performance_mode.py fast
-
-# Áp dụng ngay và in tóm tắt cấu hình (không cần mở phiên mới)
-python switch_performance_mode.py fast --immediate
-
-# Xem mode hiện tại
-python switch_performance_mode.py show
-```
-
-Ghi chú Windows:
-- `setx` chỉ áp dụng cho cửa sổ terminal mở sau đó. Nếu không dùng `--immediate`, hãy mở phiên mới hoặc chạy lại với `--mode`.
-- Kiểm tra nhanh: `python -c "import config; config.print_config_summary()"`.
-
----
-
-## 🧰 **Lệnh thường dùng (Cheat Sheet)**
+#### Tùy chọn Nâng cao
 
 ```bash
-# 1) Kiểm tra cấu hình hiện tại
-python -c "import config; config.print_config_summary()"
-
-# 2) Chạy pipeline nhanh (FAST), bỏ DAPT
-python run_pipeline.py --mode fast --no-dapt
-
-# 3) Chạy đầy đủ chất lượng (QUALITY)
-python run_pipeline.py --mode quality
-
-# 4) Tiếp tục từ checkpoint hoặc chọn bước bắt đầu
+# Hiển thị các bước có trong pipeline
 python run_pipeline.py --show-steps
-python run_pipeline.py --start-step 03 --mode fast
 
-# 5) Xoá checkpoint
-python run_pipeline.py --clear-checkpoint
+# Chạy lại pipeline và xóa checkpoint cũ (bắt đầu lại từ đầu)
+python run_pipeline.py --mode fast --no-resume
+```
 
-# 6) Chạy đánh giá (evaluation)
-# Cơ bản (nhanh):
-python scripts/04_evaluate_models.py --mode fast
+#### Tối ưu hóa các lần chạy sau với `--no-dapt`
 
-# Nhanh hơn với sampling (100 queries từ validation) và giảm Top-K
-python scripts/04_evaluate_models.py --mode fast --fast-eval --prefer-source=validation --max-queries=100 --sample-seed=42 --topk-retrieval=80 --topk-light=40 --topk-final=5
+-   **Mặc định:** Quy trình thích ứng miền (DAPT & TSDAE) được **bật sẵn** khi bạn chạy `run_pipeline.py`. Đây là bước quan trọng nhưng tốn nhiều thời gian.
+-   **Khi nào cần:** Bạn chỉ cần chạy bước này **một lần duy nhất** cho mỗi bộ dữ liệu `legal_corpus`. Sau khi các mô hình `dapt_base_model` và `tsdae_adapted_model` đã được tạo trong thư mục `models/`, bạn không cần chạy lại nó.
+-   **Cách tối ưu:** Để tiết kiệm thời gian đáng kể cho các lần chạy sau, hãy **tắt** bước này đi bằng cờ `--no-dapt`.
 
-# Đánh giá đầy đủ chất lượng cao (không rút gọn)
-python scripts/04_evaluate_models.py --mode quality --no-fast-eval
+**Ví dụ quy trình làm việc hiệu quả:**
 
-# Chọn nguồn dữ liệu đánh giá
-python scripts/04_evaluate_models.py --mode fast --prefer-source=train
-python scripts/04_evaluate_models.py --mode fast --prefer-source=public_test
+```bash
+# Lần chạy ĐẦU TIÊN (bật DAPT để tạo mô hình nền tảng)
+# Cờ --include-dapt là mặc định nên không cần thêm vào
+python run_pipeline.py --mode quality
 
-# Ghi chú: Báo cáo được lưu tại reports/evaluation_report_*.json và sẽ hiển thị ở trang
-# "📊 Kết quả Training" trong app.
+# TẤT CẢ các lần chạy SAU (tắt DAPT để tiết kiệm thời gian)
+python run_pipeline.py --mode quality --no-dapt
+```
 
-# 7) Chuyển chế độ hiệu năng (toàn hệ thống)
-python switch_performance_mode.py fast --immediate
-python switch_performance_mode.py show
+## Chạy giao diện Demo
 
-# 8) Khởi động ứng dụng web
+Sau khi đã huấn luyện xong các mô hình, bạn có thể khởi động giao diện web để tương tác trực tiếp với hệ thống.
+
+```bash
 streamlit run app/app.py
+```
+Mở trình duyệt và truy cập vào địa chỉ được cung cấp (thường là `http://localhost:8501`).
 
-# 9) Clean
+## Dọn dẹp
+
+Để dọn dẹp các mô hình và checkpoint cũ nhằm giải phóng dung lượng đĩa, bạn có thể chạy:
+
+```bash
+# Chạy thử để xem file nào sẽ bị xóa (chưa xóa thật)
+python scripts/05_cleanup_old_models.py --dry-run
+
+# Chạy thật để xóa file
 python scripts/05_cleanup_old_models.py
-# Dry-run kiểm tra trước:
-python scripts/05_cleanup_old_models.py --mode fast --dry-run
-# Xóa sạch artifacts cốt lõi (không hỏi):
-python scripts/05_cleanup_old_models.py --mode fast -y
-# Xóa “sạch sâu” bao gồm processed artifacts, reports, logs:
-python scripts/05_cleanup_old_models.py --mode fast -y --all --include-reports --include-logs
-# Sau khi clean:
-python run_pipeline.py --mode fast --start-step 01 (hoặc --start-step 03 nếu đã có dữ liệu).
-```
-
-### **Bước 5: Sử dụng API**
-
-```python
-from core.pipeline import LegalQAPipeline
-
-# Khởi tạo pipeline
-pipeline = LegalQAPipeline()
-
-# Đặt câu hỏi
-query = "Người lao động được nghỉ phép bao nhiêu ngày?"
-results = pipeline.predict(query=query, top_k_final=5)
-
-# Xem kết quả
-for i, result in enumerate(results):
-    print(f"Kết quả {i+1}: {result['content'][:100]}...")
-    print(f"Điểm: {result['rerank_score']:.3f}")
 ```
 
 ---
 
-## 💡 **Cách sử dụng**
+## Luồng xử lý & Kỹ thuật chi tiết
 
-### **Đặt câu hỏi hiệu quả**
+Để hiểu sâu hơn về cách hệ thống hoạt động, dưới đây là hai sơ đồ chi tiết mô tả luồng xử lý câu hỏi và luồng huấn luyện mô hình.
 
-#### **✅ Câu hỏi tốt:**
-- "Người lao động được nghỉ phép bao nhiêu ngày?"
-- "Điều kiện thành lập doanh nghiệp là gì?"
-- "Mức phạt vi phạm giao thông là bao nhiêu?"
-- "Thủ tục đăng ký kinh doanh cần những gì?"
+### 1. Luồng xử lý câu hỏi (Inference Flow)
 
-#### **❌ Câu hỏi không hiệu quả:**
-- "Luật" (quá chung chung)
-- "Tất cả quy định về lao động" (quá rộng)
-- "Có phải tôi đúng không?" (câu hỏi đóng)
+Sơ đồ này giải thích hành trình của một câu hỏi từ khi người dùng nhập vào cho đến khi nhận được câu trả lời cuối cùng, làm rõ vai trò kỹ thuật của từng tầng.
 
-### **Giao diện web**
+```mermaid
+graph TD
+    subgraph Đầu vào
+        A[👨‍💻 Người dùng nhập câu hỏi]
+    end
 
-1. **Truy cập**: http://localhost:8501
-2. **Nhập câu hỏi** vào ô tìm kiếm
-3. **Điều chỉnh số kết quả** mong muốn
-4. **Nhấn "Tìm kiếm"**
-5. **Xem kết quả** với điểm số và nội dung
+    A --> B{**core.pipeline.LegalQAPipeline**}
 
-### **Ví dụ chi tiết luồng xử lý từ App đến kết quả**
+    B --> T1[**Tầng 1: Retrieval - Bi-Encoder**<br/>Mục tiêu: Tốc độ & Không bỏ sót - High Recall]
+    subgraph Chi tiết Tầng 1
+        T1 --> T1_1[1/ Mã hóa câu hỏi thành Query Vector<br/>Model: vietnamese-bi-encoder]
+        T1_1 --> T1_2[2/ Tìm kiếm K vector văn bản gần nhất<br/>trong kho FAISS Index bằng phép tính<br/>Inner Product - tương đương Cosine Similarity]
+        T1_2 --> T1_3[📄 **Output**: Top 200 ứng viên tiềm năng]
+    end
 
-#### **🎯 Bước 1: Người dùng nhập câu hỏi**
-```
-Giao diện web: http://localhost:8501
-┌─────────────────────────────────────────┐
-│ 🔍 Tìm kiếm pháp luật                  │
-│                                         │
-│ [Người lao động được nghỉ phép bao     │
-│  nhiêu ngày?                    ] [🔍] │
-│                                         │
-│ Số kết quả: [5] ▼                     │
-│                                         │
-│ [Tìm kiếm]                            │
-└─────────────────────────────────────────┘
-```
-
-#### **📡 Bước 2: App gửi request đến Pipeline**
-```python
-# app/app.py
-def calculate_optimal_parameters(final_results_count):
-    """Tính toán tham số tối ưu"""
-    top_k_retrieval = max(50, final_results_count * 20)      # 100
-    top_k_light_reranking = max(20, final_results_count * 4)  # 20
-    top_k_final = final_results_count                         # 5
-    
-    return {
-        "top_k_retrieval": top_k_retrieval,
-        "top_k_light_reranking": top_k_light_reranking,
-        "top_k_final": top_k_final,
-    }
-
-# Khi user nhấn "Tìm kiếm"
-query = "Người lao động được nghỉ phép bao nhiêu ngày?"
-final_results_count = 5
-
-# Tính toán tham số
-params = calculate_optimal_parameters(final_results_count)
-# params = {
-#     "top_k_retrieval": 100,
-#     "top_k_light_reranking": 20, 
-#     "top_k_final": 5
-# }
-
-# Gọi pipeline
-results = pipeline.predict(
-    query=query,
-    top_k_retrieval=params["top_k_retrieval"],
-    top_k_final=params["top_k_final"],
-    top_k_light_reranking=params["top_k_light_reranking"],
-)
-```
-
-#### **🔧 Bước 3: Pipeline xử lý (core/pipeline.py)**
-```python
-# core/pipeline.py - LegalQAPipeline.predict()
-def predict(self, query, top_k_retrieval, top_k_final, top_k_light_reranking=None):
-    """Thực hiện quy trình 3 tầng"""
-    
-    # Tầng 1: Retrieval
-    retrieved_aids, retrieved_distances = self.retrieve(query, top_k_retrieval)
-    # retrieved_aids = ["law_1_113", "law_1_114", "law_1_115", ...]
-    # retrieved_distances = [0.95, 0.87, 0.82, ...]
-    
-    # Tầng 2: Light Reranking (nếu có)
-    if self.use_cascaded_reranking:
-        light_aids, light_distances = self.rerank_light(
-            query, retrieved_aids, retrieved_distances, top_k_light_reranking
-        )
-        # light_aids = ["law_1_113", "law_1_114", ...] (top 20)
-    
-    # Tầng 3: Strong Reranking
-    reranked_results = self.rerank(query, light_aids, light_distances)
-    # reranked_results = [
-    #     {"aid": "law_1_113", "content": "...", "rerank_score": 0.94},
-    #     {"aid": "law_1_114", "content": "...", "rerank_score": 0.88},
-    #     ...
-    # ]
-    
-    return reranked_results[:top_k_final]  # Top 5
-```
-
-#### **📊 Bước 4: App hiển thị kết quả**
-```python
-# app/app.py - Hiển thị kết quả
-for i, result in enumerate(results):
-    st.markdown(f"### Kết quả {i+1}")
-    st.markdown(f"**Điều luật:** {result['aid']}")
-    st.markdown(f"**Điểm tin cậy:** {result['rerank_score']:.3f}")
-    st.markdown(f"**Nội dung:** {result['content']}")
-```
-
-**Giao diện kết quả**:
-```
-┌─────────────────────────────────────────┐
-│ 📋 Kết quả tìm kiếm (5 kết quả)        │
-│                                         │
-│ 🥇 Kết quả 1 (Điểm: 0.940)            │
-│ Điều luật: law_1_113                   │
-│ Nội dung: Điều 113. Người lao động     │
-│ được nghỉ phép năm 12 ngày làm việc... │
-│                                         │
-│ 🥈 Kết quả 2 (Điểm: 0.880)            │
-│ Điều luật: law_1_114                   │
-│ Nội dung: Điều 114. Thời gian nghỉ     │
-│ phép năm được tính theo năm làm việc...│
-│                                         │
-│ 🥉 Kết quả 3 (Điểm: 0.820)            │
-│ ...                                     │
-└─────────────────────────────────────────┘
-```
-
-#### **⚡ Bước 5: Thông tin chi tiết (nếu user mở expander)**
-```python
-# Hiển thị thông tin chi tiết về quá trình xử lý
-with st.expander("📊 Thông số tìm kiếm được tính toán tự động"):
-    st.markdown(f"**🎯 Tầng 1 - Retrieval:** {params['top_k_retrieval']} ứng viên")
-    st.markdown(f"**⚡ Tầng 2 - Light Reranking:** {params['top_k_light_reranking']} ứng viên")
-    st.markdown(f"**🎯 Tầng 3 - Final Reranking:** {params['top_k_final']} kết quả cuối cùng")
-
-with st.expander("🔍 Chi tiết quá trình xử lý"):
-    st.markdown("**Tầng 1:** Tìm kiếm 100 ứng viên từ 15,420 văn bản")
-    st.markdown("**Tầng 2:** Lọc xuống 20 ứng viên chất lượng cao")
-    st.markdown("**Tầng 3:** Thẩm định chuyên sâu với Ensemble models")
-    st.markdown("**Thời gian:** ~550ms")
-```
-
-### **Tùy chỉnh kết quả**
-
-- **Ít kết quả (1-3)**: Tập trung vào câu trả lời chính xác nhất
-- **Nhiều kết quả (5-10)**: Xem nhiều góc độ và ngữ cảnh
-- **Rất nhiều (10-20)**: Nghiên cứu toàn diện
-
-### **Mẹo sử dụng**
-
-1. **Sử dụng từ khóa chính xác**
-   - ✅ "nghỉ phép" thay vì "nghỉ ngơi"
-   - ✅ "thành lập doanh nghiệp" thay vì "mở công ty"
-
-2. **Đặt câu hỏi cụ thể**
-   - ✅ "Mức phạt vi phạm giao thông là bao nhiêu?"
-   - ❌ "Luật giao thông"
-
-3. **Kết hợp nhiều câu hỏi**
-   - Hỏi từng khía cạnh riêng biệt
-   - So sánh kết quả để có cái nhìn toàn diện
-
----
-
-## 🧠 **Kiến trúc hệ thống**
-
-### **Tổng quan kiến trúc**
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Người dùng đặt câu hỏi                    │
-│  "Người lao động được nghỉ phép bao nhiêu ngày?"           │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TẦNG 1: Bi-Encoder Retrieval                              │
-│  • Tìm kiếm rộng trong toàn bộ kho dữ liệu                │
-│  • Trả về 500 ứng viên có liên quan nhất                   │
-│  • Thời gian: ~100ms                                       │
-│  • Kết quả: [law_1_113, law_1_114, law_2_45, ...]        │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TẦNG 2: Light Reranker                                   │
-│  • Lọc nhanh từ 500 xuống 50 ứng viên chất lượng cao       │
-│  • Sử dụng model nhỏ, nhanh                               │
-│  • Thời gian: ~150ms                                       │
-│  • Kết quả: [law_1_113, law_1_114, law_1_115, ...]       │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TẦNG 3: Ensemble Strong Reranker                         │
-│  • Hội đồng chuyên gia thẩm định chuyên sâu               │
-│  • Sử dụng nhiều Cross-Encoder models                     │
-│  • Thời gian: ~300ms                                       │
-│  • Kết quả: Top 5 với điểm số chi tiết                     │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Top 5 kết quả chính xác nhất             │
-│  • law_1_113: 0.95 điểm                                   │
-│  • law_1_114: 0.87 điểm                                   │
-│  • law_1_115: 0.82 điểm                                   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### **Ví dụ chi tiết luồng xử lý câu hỏi**
-
-#### **🎯 Input: Câu hỏi từ người dùng**
-```
-"Người lao động được nghỉ phép bao nhiêu ngày?"
-```
-
-#### **📊 Tầng 1: Bi-Encoder Retrieval**
-
-**Input**: Câu hỏi người dùng
-**Process**: 
-1. Encode câu hỏi thành vector 768 chiều
-2. So sánh với 15,420 văn bản pháp luật
-3. Trả về 500 ứng viên có điểm cao nhất
-
-**Output**: 
-```python
-retrieved_aids = [
-    "law_1_113",    # Điều 113 Bộ luật Lao động
-    "law_1_114",    # Điều 114 Bộ luật Lao động  
-    "law_2_45",     # Điều 45 Luật khác
-    "law_1_115",    # Điều 115 Bộ luật Lao động
-    # ... 496 ứng viên khác
-]
-
-retrieval_scores = [0.95, 0.87, 0.82, 0.78, ...]
-```
-
-#### **⚡ Tầng 2: Light Reranker**
-
-**Input**: 500 ứng viên từ Tầng 1
-**Process**:
-1. Sử dụng Light Reranker model (nhỏ, nhanh)
-2. Đánh giá từng cặp (câu hỏi, văn bản)
-3. Kết hợp điểm retrieval + light reranking
-4. Chọn top 50 ứng viên
-
-**Output**:
-```python
-light_aids = [
-    "law_1_113",    # Điểm: 0.92
-    "law_1_114",    # Điểm: 0.89
-    "law_1_115",    # Điểm: 0.85
-    # ... 47 ứng viên khác
-]
-
-light_scores = [0.92, 0.89, 0.85, ...]
-```
-
-#### **⚖️ Tầng 3: Ensemble Strong Reranker**
-
-**Input**: 50 ứng viên từ Tầng 2
-**Process**:
-1. Sử dụng 2 Cross-Encoder models (PhoBERT-Law + XLM-RoBERTa)
-2. Đánh giá chuyên sâu từng cặp (câu hỏi, văn bản)
-3. Lấy điểm trung bình từ 2 models
-4. Sắp xếp theo điểm số
-
-**Output**:
-```python
-final_results = [
-    {
-        "aid": "law_1_113",
-        "content": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-        "retrieval_score": 0.95,
-        "rerank_score": 0.92,
-        "confidence": "high"
-    },
-    {
-        "aid": "law_1_114", 
-        "content": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc...",
-        "retrieval_score": 0.87,
-        "rerank_score": 0.89,
-        "confidence": "high"
-    },
-    # ... 3 kết quả khác
-]
-```
-
-### **Chi tiết từng tầng**
-
-### **Chi tiết từng tầng**
-
-#### **🎯 Tầng 1: Bi-Encoder Retrieval**
-
-**Mục đích**: Tìm kiếm rộng trong toàn bộ kho dữ liệu
-
-**Cách hoạt động**:
-1. Chuyển câu hỏi thành vector 768 chiều
-2. So sánh với tất cả văn bản trong kho dữ liệu
-3. Trả về 500 kết quả có độ tương đồng cao nhất
-
-**Hiệu suất**:
-- Thời gian: ~100ms
-- Độ chính xác: ~70% (Precision@5)
-
-#### **⚡ Tầng 2: Light Reranker**
-
-**Mục đích**: Lọc nhanh từ 500 xuống 50 ứng viên chất lượng cao
-
-**Cách hoạt động**:
-1. Sử dụng model nhỏ, nhanh để đánh giá sơ bộ
-2. Kết hợp điểm retrieval với điểm light reranking
-3. Chọn top 50 ứng viên để đưa lên tầng 3
-
-**Hiệu suất**:
-- Thời gian: ~150ms
-- Lý do: Tiết kiệm thời gian cho tầng 3
-
-#### **⚖️ Tầng 3: Ensemble Strong Reranker**
-
-**Mục đích**: Hội đồng chuyên gia thẩm định và chọn top 5 kết quả
-
-**Cách hoạt động**:
-1. Sử dụng nhiều model Cross-Encoder cùng lúc
-2. PhoBERT-Law + XLM-RoBERTa đánh giá song song
-3. Lấy điểm trung bình để ra quyết định cuối cùng
-
-**Hiệu suất**:
-- Thời gian: ~300ms
-- Độ chính xác: >90% (Precision@5)
-
-### **Tại sao cần 3 tầng?**
-
-1. **Tầng 1**: Không thể bỏ qua vì cần tìm kiếm trong toàn bộ kho dữ liệu
-2. **Tầng 2**: Cần thiết để giảm tải cho tầng 3, tránh lãng phí tài nguyên
-3. **Tầng 3**: Cần thiết để đạt độ chính xác tối đa cho kết quả cuối cùng
-
----
-
-## ⚙️ **Cài đặt và cấu hình**
-
-### **Yêu cầu hệ thống**
-
-```
-OS: Windows 10+, Ubuntu 18.04+, macOS 10.14+
-RAM: Tối thiểu 8GB, khuyến nghị 16GB+
-Storage: Tối thiểu 10GB cho models và data
-GPU: NVIDIA GPU với CUDA (khuyến nghị)
-Python: 3.8+
-```
-
-### **Cấu trúc dự án**
-
-```
-LawBot/
-├── 📁 app/
-│   └── app.py                  # Giao diện web Streamlit
-├── 📁 core/                    # Các module cốt lõi
-│   ├── pipeline.py             # Class pipeline xử lý chính
-│   ├── logging_system.py       # Hệ thống ghi log
-│   ├── evaluation_reporter.py  # Công cụ đánh giá
-│   ├── progress_tracker.py     # Theo dõi tiến trình
-│   └── 📁 utils/               # Utilities
-│       ├── data_processing.py  # Xử lý dữ liệu
-│       ├── model_utils.py      # Utilities cho models
-│       ├── evaluation.py       # Metrics đánh giá
-│       └── augmentation.py     # Data augmentation
-├── 📁 scripts/                 # Các script thực thi
-│   ├── 00_adapt_model.py       # DAPT với GPU acceleration
-│   ├── 01_check_environment.py # Kiểm tra môi trường
-│   ├── 02_prepare_training_data.py # Hard negative mining
-│   ├── 03_train_models.py      # Training với single data loading
-│   └── 📁 utils/               # Scripts tiện ích
-├── 📁 data/
-├── 📁 models/                  # Models đã huấn luyện
-├── 📁 indexes/                 # FAISS indexes
-├── 📁 reports/                 # Báo cáo đánh giá
-├── 📁 logs/                    # Log files
-├── 📄 config.py                # Cấu hình trung tâm
-├── 📄 run_pipeline.py          # Trình điều khiển pipeline
-└── 📄 README.md                # Tài liệu hướng dẫn
-```
-
-### **Cấu hình môi trường**
-
-#### **Environment Variables**
-
-```bash
-# Environment
-export LAWBOT_ENV=production
-export LAWBOT_DEBUG=false
-
-# Directories
-export LAWBOT_DATA_DIR=/path/to/data
-export LAWBOT_MODELS_DIR=/path/to/models
-export LAWBOT_INDEXES_DIR=/path/to/indexes
-
-# Hyperparameters
-export LAWBOT_BI_ENCODER_BATCH_SIZE=16
-export LAWBOT_CROSS_ENCODER_BATCH_SIZE=8
-export LAWBOT_BI_ENCODER_LR=2e-5
-export LAWBOT_CROSS_ENCODER_LR=2e-5
-
-# Performance Optimizations
-export LAWBOT_FP16_TRAINING=true
-export LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS=4
-export LAWBOT_CROSS_ENCODER_DATALOADER_NUM_WORKERS=4
-
-# Pipeline settings
-export LAWBOT_TOP_K_RETRIEVAL=100
-export LAWBOT_TOP_K_FINAL=5
-```
-
-#### **Configuration File**
-
-```python
-import config
-
-# In thông tin cấu hình
-config.print_config_summary()
-
-# Validate cấu hình
-config.validate_config()
-```
-
-### **Kiểm tra cài đặt**
-
-```bash
-# Kiểm tra cấu trúc project
-python scripts/utils/check_project.py
-
-# Kiểm tra môi trường
-python scripts/01_check_environment.py
-
-# Test GPU availability
-python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
-```
-
----
-
-## 🔄 **Quy trình huấn luyện**
-
-### **Tổng quan quy trình**
-
-```
-📊 Dữ liệu thô → 🧠 Pre-training → 🔍 Training → 📈 Evaluation → 🚀 Deployment
-```
-
-### **Ví dụ chi tiết luồng dữ liệu từ thô đến kết quả**
-
-#### **📄 Bước 1: Dữ liệu thô (Raw Data)**
-
-**File**: `data/raw/legal_corpus.json`
-```json
-[
-  {
-    "law_id": "law_1",
-    "title": "Bộ luật Lao động",
-    "content": [
-      {
-        "aid": "113",
-        "content_Article": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc và được tăng thêm theo thời gian làm việc..."
-      },
-      {
-        "aid": "114", 
-        "content_Article": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc và được tính vào thời gian làm việc..."
-      }
-    ]
-  }
-]
-```
-
-**File**: `data/raw/train.json`
-```json
-[
-  {
-    "question": "Người lao động được nghỉ phép bao nhiêu ngày?",
-    "answer_id": "law_1_113",
-    "answer_content": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-    "category": "labor_law"
-  }
-]
-```
-
-#### **🧹 Bước 2: Preprocessing (Tiền xử lý)**
-
-**Input**: Dữ liệu thô từ Bước 1
-**Process**: 
-1. Parse JSON files
-2. Clean text (loại bỏ ký tự đặc biệt)
-3. Validate data structure
-4. Create mappings
-
-**Output**: 
-```python
-# aid_map.json
-{
-  "law_1_113": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-  "law_1_114": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc...",
-  # ... 15,420 articles
-}
-
-# train_data.json
-[
-  {
-    "question": "Người lao động được nghỉ phép bao nhiêu ngày?",
-    "positive": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-    "negative": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc...",
-    "label": 1
-  }
-]
-```
-
-#### **🎯 Bước 3: Training Data Generation**
-
-**Input**: Dữ liệu đã preprocess
-**Process**:
-1. Tạo positive pairs: (câu hỏi, đáp án đúng)
-2. Hard negative mining: Tìm câu trả lời sai nhưng rất giống đúng
-3. Data augmentation: Tạo thêm dữ liệu đa dạng
-
-**Output**:
-
-**Bi-Encoder Triplets**:
-```python
-# bi_encoder_triplets.json
-[
-  {
-    "question": "Người lao động được nghỉ phép bao nhiêu ngày?",
-    "positive": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-    "negative": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc..."
-  }
-]
-```
-
-**Cross-Encoder Pairs**:
-```python
-# cross_encoder_pairs.json
-[
-  {
-    "question": "Người lao động được nghỉ phép bao nhiêu ngày?",
-    "document": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-    "label": 1  # Positive
-  },
-  {
-    "question": "Người lao động được nghỉ phép bao nhiêu ngày?",
-    "document": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc...",
-    "label": 0  # Negative
-  }
-]
-```
-
-#### **🧠 Bước 4: Model Training**
-
-**Input**: Training data từ Bước 3
-**Process**:
-
-**Bi-Encoder Training**:
-```python
-# Model: SentenceTransformer
-# Input: Triplets (question, positive, negative)
-# Loss: ContrastiveLoss
-# Output: Bi-Encoder model
-
-# Ví dụ training:
-question = "Người lao động được nghỉ phép bao nhiêu ngày?"
-positive = "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc..."
-negative = "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc..."
-
-# Model học để:
-# - Tăng similarity(question, positive)
-# - Giảm similarity(question, negative)
-```
-
-**Cross-Encoder Training**:
-```python
-# Model: PhoBERT-Law
-# Input: Pairs (question, document, label)
-# Loss: CrossEntropyLoss
-# Output: Cross-Encoder model
-
-# Ví dụ training:
-pair1 = ["Người lao động được nghỉ phép bao nhiêu ngày?", 
-         "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...", 
-         1]  # Positive
-
-pair2 = ["Người lao động được nghỉ phép bao nhiêu ngày?", 
-         "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc...", 
-         0]  # Negative
-```
-
-#### **📊 Bước 5: FAISS Index Building**
-
-**Input**: Tất cả documents + Bi-Encoder model
-**Process**:
-1. Encode tất cả documents thành vectors
-2. Build FAISS index cho fast similarity search
-3. Create index-to-aid mapping
-
-**Output**:
-```python
-# faiss_index.bin (Binary file)
-# index_to_aid.json
-{
-  "0": "law_1_113",
-  "1": "law_1_114", 
-  "2": "law_1_115",
-  # ... 15,420 mappings
-}
-```
-
-#### **🚀 Bước 6: Inference (Khi người dùng hỏi)**
-
-**Input**: Câu hỏi từ người dùng
-**Process**:
-
-**Tầng 1 - Retrieval**:
-```python
-# Input
-query = "Người lao động được nghỉ phép bao nhiêu ngày?"
-
-# Process
-query_vector = bi_encoder.encode(query)  # [0.1, 0.3, 0.5, ...] (768 dim)
-similarities = faiss_index.search(query_vector, 500)
-
-# Output
-retrieved_aids = ["law_1_113", "law_1_114", "law_1_115", ...]
-retrieval_scores = [0.95, 0.87, 0.82, ...]
-```
-
-**Tầng 2 - Light Reranking**:
-```python
-# Input
-pairs = [
-    ["Người lao động được nghỉ phép bao nhiêu ngày?", "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc..."],
-    ["Người lao động được nghỉ phép bao nhiêu ngày?", "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc..."]
-]
-
-# Process
-light_scores = light_reranker.predict(pairs)  # [0.92, 0.89]
-
-# Output
-light_aids = ["law_1_113", "law_1_114", ...]  # Top 50
-```
-
-**Tầng 3 - Strong Reranking**:
-```python
-# Input
-pairs = [
-    ["Người lao động được nghỉ phép bao nhiêu ngày?", "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc..."],
-    ["Người lao động được nghỉ phép bao nhiêu ngày?", "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc..."]
-]
-
-# Process
-model1_scores = phobert_law.predict(pairs)  # [0.95, 0.87]
-model2_scores = xlm_roberta.predict(pairs)   # [0.93, 0.89]
-ensemble_scores = (model1_scores + model2_scores) / 2  # [0.94, 0.88]
-
-# Output
-final_results = [
-    {
-        "aid": "law_1_113",
-        "content": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-        "rerank_score": 0.94
-    },
-    {
-        "aid": "law_1_114",
-        "content": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc...", 
-        "rerank_score": 0.88
-    }
-]
-```
-
-### **Chi tiết từng bước**
-
-#### **🔧 Bước 0: Domain-Adaptive Pre-training (DAPT)**
-
-**Mục tiêu**: Chuyên môn hóa model ngôn ngữ cho pháp luật
-
-**Input**:
-```json
-{
-  "legal_corpus.json": "Kho văn bản pháp luật thô",
-  "PhoBERT-base": "Model ngôn ngữ tổng quát"
-}
-```
-
-**Quy trình**:
-1. Load dữ liệu: Đọc toàn bộ văn bản pháp luật
-2. Tokenization: Chuyển văn bản thành tokens
-3. Masked Language Modeling: Học cách dự đoán từ bị che
-4. Fine-tuning: Điều chỉnh weights cho phù hợp với pháp luật
-
-**Output**:
-```python
-models/phobert-law/
-├── config.json          # Cấu hình model
-├── pytorch_model.bin    # Weights đã fine-tune
-└── tokenizer.json      # Tokenizer chuyên biệt
-```
-
-**Thời gian**: 2-4 giờ (tùy GPU)
-
-#### **🔍 Bước 1: Environment & Data Preparation**
-
-**Mục tiêu**: Chuẩn bị môi trường và dữ liệu
-
-**Input**:
-```json
-{
-  "train.json": "Dữ liệu training với câu hỏi-đáp án",
-  "public_test.json": "Dữ liệu test",
-  "legal_corpus.json": "Kho văn bản pháp luật"
-}
-```
-
-**Quy trình**:
-1. Environment check: Kiểm tra GPU, memory, dependencies
-2. Data loading: Load và validate dữ liệu
-3. Data splitting: Chia train/validation
-4. Index creation: Tạo mapping cho nhanh tra cứu
-
-**Output**:
-```python
-data/processed/
-├── train_data.json      # Dữ liệu training đã xử lý
-├── val_data.json        # Dữ liệu validation
-├── aid_map.json         # Mapping ID → nội dung
-└── doc_id_to_aids.json # Mapping document → articles
-```
-
-**Thời gian**: 5-10 phút
-
-#### **🔍 Bước 2: Hard Negative Mining & Data Preparation**
-
-**Mục tiêu**: Tạo dữ liệu training chất lượng cao
-
-**Input**:
-```python
-{
-  "train_data": "Dữ liệu training cơ bản",
-  "legal_corpus": "Kho văn bản pháp luật"
-}
-```
-
-**Quy trình**:
-1. Tạo positive pairs: (câu hỏi, đáp án đúng)
-2. Train temporary Bi-Encoder: Model tạm thời để tìm hard negatives
-3. Hard negative mining: Tìm câu trả lời sai nhưng rất giống đúng
-4. Data augmentation: Tạo thêm dữ liệu đa dạng
-5. Format conversion: Chuyển đổi format cho từng model
-
-**Output**:
-```python
-data/training/
-├── bi_encoder_triplets.json  # (question, positive, negative)
-├── cross_encoder_pairs.json  # (question, document, label)
-└── light_reranker_pairs.json # (question, document, label)
-```
-
-**Thời gian**: 30-60 phút
-
-#### **🎓 Bước 3: Model Training & Evaluation**
-
-**Mục tiêu**: Huấn luyện tất cả models và đánh giá
-
-**Input**:
-```python
-{
-  "bi_encoder_triplets": "Dữ liệu cho Bi-Encoder",
-  "cross_encoder_pairs": "Dữ liệu cho Cross-Encoder",
-  "phobert_law": "Model đã DAPT (nếu có)"
-}
-```
-
-**Quy trình**:
-
-**1. Bi-Encoder Training**:
-```python
-# Model: SentenceTransformer
-# Loss: ContrastiveLoss
-# Optimizer: AdamW (lr=2e-5)
-# Batch size: 16 (adaptive)
-# Epochs: 3
-```
-
-**2. FAISS Index Building**:
-```python
-# Encode tất cả documents
-# Build FAISS index
-# Save index và mappings
-```
-
-**3. Cross-Encoder Training**:
-```python
-# Model: PhoBERT-Law (nếu có) hoặc XLM-RoBERTa
-# Loss: CrossEntropyLoss
-# Optimizer: AdamW (lr=2e-5)
-# Batch size: 8 (adaptive)
-# Epochs: 5
-```
-
-**4. Light Reranker Training**:
-```python
-# Model: Smaller Cross-Encoder
-# Purpose: Fast filtering
-# Batch size: 16
-# Epochs: 3
-```
-
-**Output**:
-```python
-models/
-├── bi-encoder/          # Bi-Encoder model
-├── cross-encoder/       # Cross-Encoder model
-├── light-reranker/      # Light Reranker model
-└── phobert-law/         # DAPT model (nếu có)
-
-indexes/
-├── faiss_index.bin      # FAISS index
-└── index_mapping.json   # Index mappings
-
-reports/
-├── evaluation_report.json # Kết quả đánh giá
-└── performance_metrics.json # Metrics chi tiết
-```
-
-**Thời gian**: 1-3 giờ (tùy GPU)
-
-### **Ví dụ chi tiết luồng training từng bước**
-
-#### **🔧 Bước 0: DAPT (Domain-Adaptive Pre-training)**
-
-**Command**:
-```bash
-python scripts/00_adapt_model.py
-```
+    T1_3 --> T2[**Tầng 2: Light Reranker**<br/>Mục tiêu: Lọc nhanh & Hiệu quả]
+    subgraph Chi tiết Tầng 2
+        T2 --> T2_1[1/ Input: Query & 200 ứng viên]
+        T2_1 --> T2_2[2/ Chấm điểm từng cặp CLS - Classification token query SEP - Separator token document SEP<br/>bằng Cross-Encoder hạng nhẹ]
+        T2_2 --> T2_3[📄 **Output**: Top 80 ứng viên chất lượng cao]
+    end
 
-**Input**: 
-```json
-# data/raw/legal_corpus.json
-[
-  {
-    "law_id": "law_1",
-    "title": "Bộ luật Lao động",
-    "content": [
-      {
-        "aid": "113",
-        "content_Article": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc..."
-      }
-    ]
-  }
-]
-```
-
-**Process**:
-```python
-# scripts/00_adapt_model.py
-def train_phobert_law(legal_texts, output_path):
-    # 1. Load PhoBERT base model
-    model = AutoModelForMaskedLM.from_pretrained("vinai/phobert-base")
-    tokenizer = AutoTokenizer.from_pretrained("vinai/phobert-base")
-    
-    # 2. Create dataset
-    dataset = create_dapt_dataset(legal_texts, tokenizer)
-    
-    # 3. Training
-    trainer = Trainer(
-        model=model,
-        args=TrainingArguments(
-            output_dir=output_path,
-            num_train_epochs=5,
-            per_device_train_batch_size=8,
-            learning_rate=5e-5,
-        ),
-        train_dataset=dataset,
-    )
-    trainer.train()
-    
-    # 4. Save model
-    model.save_pretrained(output_path)
-    tokenizer.save_pretrained(output_path)
-```
-
-**Output**:
-```python
-# models/phobert-law/
-├── config.json          # Model configuration
-├── pytorch_model.bin    # Trained weights
-├── tokenizer.json      # Tokenizer
-└── vocab.txt           # Vocabulary
-```
-
-**Logs**:
-```
-[INFO] [DAPT] Starting PhoBERT-Law training...
-[INFO] [DAPT] Epoch 1/5: Loss = 2.2867
-[INFO] [DAPT] Epoch 2/5: Loss = 1.8543
-[INFO] [DAPT] Epoch 3/5: Loss = 1.4321
-[INFO] [DAPT] Epoch 4/5: Loss = 1.1234
-[INFO] [DAPT] Epoch 5/5: Loss = 0.5882
-[INFO] [DAPT] Training completed successfully!
-```
-
-#### **🔍 Bước 1: Environment & Data Processing**
-
-**Command**:
-```bash
-python scripts/01_check_environment.py
-```
-
-**Process**:
-```python
-# scripts/01_check_environment.py
-def run_complete_pipeline():
-    # 1. Check environment
-    check_environment()
-    # ✅ Python 3.8+
-    # ✅ PyTorch 1.9+
-    # ✅ GPU available: RTX 3080
-    # ✅ Memory: 16GB available
-    
-    # 2. Check data files
-    check_data_files()
-    # ✅ legal_corpus.json: 15,420 articles
-    # ✅ train.json: 1,000 questions
-    # ✅ public_test.json: 200 questions
-    
-    # 3. Build mappings
-    aid_map, doc_id_to_aids = build_maps_optimized()
-    # aid_map = {"law_1_113": "Điều 113. Người lao động...", ...}
-    # doc_id_to_aids = {"law_1": ["law_1_113", "law_1_114", ...]}
-    
-    # 4. Split data
-    train_data, val_data = split_data_optimized(train_data)
-    # train_data: 850 samples
-    # val_data: 150 samples
-```
-
-**Output**:
-```python
-# data/processed/
-├── aid_map.pkl                    # Mapping aid -> content
-├── doc_id_to_aids_complete.json  # Mapping doc_id -> aids
-├── train_data.json               # Training data
-└── val_data.json                 # Validation data
-```
-
-#### **🎯 Bước 2: Hard Negative Mining & Data Preparation**
-
-**Command**:
-```bash
-python scripts/02_prepare_training_data.py
-```
-
-**Process**:
-```python
-# scripts/02_prepare_training_data.py
-def run_prepare_data_pipeline():
-    # 1. Load processed data
-    train_data, aid_map = load_processed_data()
-    
-    # 2. Create initial triplets
-    initial_triplets = create_initial_triplets(train_data, aid_map)
-    # [
-    #   {
-    #     "question": "Người lao động được nghỉ phép bao nhiêu ngày?",
-    #     "positive": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-    #     "negative": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc..."
-    #   }
-    # ]
-    
-    # 3. Train temporary Bi-Encoder for hard negative mining
-    temp_model = load_optimized_model_for_hard_negative_mining()
-    
-    # 4. Find hard negatives
-    hard_negatives = find_hard_negatives(temp_model, train_data, aid_map)
-    # [
-    #   {
-    #     "question": "Người lao động được nghỉ phép bao nhiêu ngày?",
-    #     "positive": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-    #     "negative": "Điều 115. Người lao động được nghỉ việc riêng...",  # Hard negative
-    #   }
-    # ]
-    
-    # 5. Create final datasets
-    bi_encoder_data = create_final_dataset(initial_triplets, hard_negatives, train_data, aid_map)
-    cross_encoder_data = create_cross_encoder_pairs(bi_encoder_data)
-    
-    # 6. Save training data
-    save_training_data(bi_encoder_data, cross_encoder_data)
-```
-
-**Output**:
-```python
-# data/processed/
-├── bi_encoder_triplets.json      # Training data for Bi-Encoder
-├── cross_encoder_pairs.json      # Training data for Cross-Encoder
-└── light_reranker_pairs.json     # Training data for Light Reranker
-```
-
-#### **🎓 Bước 3: Model Training & Evaluation**
-
-**Command**:
-```bash
-python scripts/03_train_models.py
-```
-
-**Process**:
-
-**3.1 Bi-Encoder Training**:
-```python
-# scripts/03_train_models.py
-def train_bi_encoder_optimized(bi_encoder_data):
-    # 1. Load data
-    train_examples = create_bi_encoder_examples(bi_encoder_data)
-    
-    # 2. Initialize model
-    model = SentenceTransformer("bkai-foundation-models/vietnamese-bi-encoder")
-    train_loss = losses.ContrastiveLoss(model)
-    
-    # 3. Training
-    model.fit(
-        train_objectives=[(train_dataloader, train_loss)],
-        epochs=3,
-        warmup_steps=100,
-        optimizer_params={"lr": 2e-5},
-        evaluator=evaluator,
-        output_path=str(config.BI_ENCODER_PATH),
-    )
-    
-    # 4. Save model
-    model.save(str(config.BI_ENCODER_PATH))
-```
-
-**Logs**:
-```
-[INFO] [BI-ENCODER] Starting training...
-[INFO] [BI-ENCODER] Epoch 1/3: Loss = 0.8543
-[INFO] [BI-ENCODER] Epoch 2/3: Loss = 0.6234
-[INFO] [BI-ENCODER] Epoch 3/3: Loss = 0.4123
-[INFO] [BI-ENCODER] Training completed!
-```
-
-**3.2 FAISS Index Building**:
-```python
-def build_faiss_index_optimized(model):
-    # 1. Encode all documents
-    all_contents = list(aid_map.values())
-    embeddings = model.encode(all_contents, show_progress_bar=True)
-    
-    # 2. Build FAISS index
-    dimension = embeddings.shape[1]  # 768
-    index = faiss.IndexFlatIP(dimension)
-    faiss.normalize_L2(embeddings)
-    index.add(embeddings)
-    
-    # 3. Save index and mappings
-    faiss.write_index(index, str(config.FAISS_INDEX_PATH))
-    save_json(index_to_aid, config.INDEX_TO_AID_PATH)
-```
-
-**3.3 Cross-Encoder Training**:
-```python
-def _train_reranker(model_name_or_path, training_data, training_args, max_length, model_log_name):
-    # 1. Load model
-    model = AutoModelForSequenceClassification.from_pretrained(model_name_or_path)
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    
-    # 2. Create dataset
-    dataset = Dataset.from_dict(training_data)
-    
-    # 3. Training
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=dataset,
-        tokenizer=tokenizer,
-        compute_metrics=compute_metrics,
-    )
-    trainer.train()
-    
-    # 4. Save model
-    model.save_pretrained(output_path)
-    tokenizer.save_pretrained(output_path)
-```
-
-**Logs**:
-```
-[INFO] [CROSS-ENCODER] Starting training...
-[INFO] [CROSS-ENCODER] Epoch 1/5: Loss = 0.6543, Accuracy = 0.7234
-[INFO] [CROSS-ENCODER] Epoch 2/5: Loss = 0.5234, Accuracy = 0.8123
-[INFO] [CROSS-ENCODER] Epoch 3/5: Loss = 0.4123, Accuracy = 0.8543
-[INFO] [CROSS-ENCODER] Epoch 4/5: Loss = 0.3456, Accuracy = 0.8765
-[INFO] [CROSS-ENCODER] Epoch 5/5: Loss = 0.2987, Accuracy = 0.8923
-[INFO] [CROSS-ENCODER] Training completed!
-```
-
-**3.4 Evaluation**:
-```python
-def run_comprehensive_evaluation():
-    # 1. Load test data
-    test_queries = ["Người lao động được nghỉ phép bao nhiêu ngày?"]
-    ground_truth = [["law_1_113"]]
-    
-    # 2. Run retrieval evaluation
-    retrieval_metrics = evaluate_retrieval(test_queries, ground_truth)
-    # {
-    #   "precision@5": 0.75,
-    #   "recall@5": 0.68,
-    #   "mrr": 0.82
-    # }
-    
-    # 3. Run reranking evaluation
-    reranking_metrics = evaluate_reranking(test_queries, ground_truth)
-    # {
-    #   "accuracy": 0.91,
-    #   "precision": 0.89,
-    #   "recall": 0.93
-    # }
-    
-    # 4. Save evaluation report
-    save_evaluation_report(retrieval_metrics, reranking_metrics)
-```
-
-**Output**:
-```python
-# models/
-├── bi-encoder/          # Bi-Encoder model
-├── cross-encoder/       # Cross-Encoder model
-├── light-reranker/      # Light Reranker model
-└── phobert-law/         # DAPT model
-
-# indexes/
-├── faiss_index.bin      # FAISS index
-└── index_to_aid.json    # Index mappings
-
-# reports/
-├── evaluation_report.json # Evaluation results
-└── performance_metrics.json # Performance metrics
-```
-
-### **Chạy từng bước riêng lẻ**
-
-```bash
-# Bước 0: DAPT (Domain-Adaptive Pre-training)
-python scripts/00_adapt_model.py
-
-# Bước 1: Kiểm tra môi trường và xử lý dữ liệu
-python scripts/01_check_environment.py
-
-# Bước 2: Chuẩn bị dữ liệu training
-python scripts/02_prepare_training_data.py
-
-# Bước 3: Huấn luyện models và đánh giá
-python scripts/03_train_models.py
-```
-
-### **Hyperparameters tối ưu**
-
-#### **Bi-Encoder**:
-```python
-{
-  "learning_rate": 2e-5,
-  "batch_size": 16,
-  "epochs": 3,
-  "warmup_steps": 100,
-  "max_length": 256
-}
-```
-
-#### **Cross-Encoder**:
-```python
-{
-  "learning_rate": 2e-5,
-  "batch_size": 8,
-  "epochs": 5,
-  "warmup_steps": 100,
-  "max_length": 512
-}
-```
-
-### **Performance Optimization**
-
-#### **GPU Acceleration**:
-```python
-# Mixed Precision Training
-config.FP16_TRAINING = True
-
-# Gradient Accumulation
-config.GRADIENT_ACCUMULATION_STEPS = 2
-
-# Memory Optimization
-torch.cuda.empty_cache()
-```
-
-#### **Data Loading Optimization**:
-```python
-# Multi-worker DataLoader
-config.NUM_WORKERS = 4
-
-# Pin Memory
-config.PIN_MEMORY = True
-
-# Prefetch Factor
-config.PREFETCH_FACTOR = 2
-```
-
----
-
-## 📊 **Đánh giá hiệu suất**
-
-### **Metrics đánh giá**
-
-#### **🔍 Retrieval Metrics (Bi-Encoder)**:
-```python
-{
-  "Precision@5": 0.75,    # 75% kết quả top-5 là đúng
-  "Recall@5": 0.68,       # 68% đáp án đúng được tìm thấy
-  "MRR": 0.82,            # Mean Reciprocal Rank
-  "NDCG@10": 0.79         # Normalized Discounted Cumulative Gain
-}
-```
-
-#### **⚖️ Reranking Metrics (Cross-Encoder)**:
-```python
-{
-  "Accuracy": 0.91,       # 91% dự đoán đúng
-  "AUC-ROC": 0.94,       # Area under ROC curve
-  "Precision": 0.89,      # Precision cho positive class
-  "Recall": 0.93          # Recall cho positive class
-}
-```
-
-#### **🎯 End-to-End Metrics**:
-```python
-{
-  "Response_Time": "0.5s",     # Thời gian trả lời
-  "Throughput": "2 req/s",     # Số request/giây
-  "Memory_Usage": "4GB",       # Memory sử dụng
-  "GPU_Utilization": "85%"     # Sử dụng GPU
-}
-```
-
-### **So sánh hiệu suất**
-
-| Tiêu chí | Tìm kiếm thủ công | LawBot v8.1 |
-|----------|-------------------|-------------|
-| **Thời gian** | 2-3 giờ | **30 giây** |
-| **Độ chính xác** | 60-70% | **90%+** |
-| **Khả năng mở rộng** | Hạn chế | **Không giới hạn** |
-| **Chi phí** | Cao (nhân lực) | **Thấp** |
-
-### **Độ chính xác theo từng tầng**
-
-| Metric | Tầng 1: Retrieval | Tầng 2: Light Reranking | Tầng 3: Strong Reranking |
-|--------|-------------------|-------------------------|---------------------------|
-| **Precision@5** | ~70% | ~80% | **> 90%** |
-| **Recall@5** | ~60% | ~75% | **> 85%** |
-| **MRR** | ~0.7 | ~0.8 | **> 0.85** |
-
-### **Thời gian xử lý**
+    T2_3 --> T3[**Tầng 3: Strong Reranker**<br/>Mục tiêu: Độ chính xác cao nhất - High Precision]
+    subgraph Chi tiết Tầng 3
+        T3 --> T3_1[1/ Input: Query & 80 ứng viên]
+        T3_1 --> T3_2[2/ Phân tích sâu từng cặp bằng<br/>Cross-Encoder hạng nặng - PhoBERT-Law]
+        T3_2 --> T3_3[📄 **Output**: Top 5-10 kết quả cuối cùng với điểm số chính xác]
+    end
 
-| Tác vụ | Thời gian | Mô tả |
-|--------|-----------|-------|
-| **Tầng 1**: Retrieval (500 ứng viên) | ~100ms | Tìm kiếm rộng trong toàn bộ kho dữ liệu |
-| **Tầng 2**: Light Reranking (50 ứng viên) | ~150ms | Lọc nhanh với Light Reranker |
-| **Tầng 3**: Strong Reranking (5 kết quả) | ~300ms | Thẩm định chuyên sâu với Ensemble |
-| **📊 Tổng thời gian phản hồi** | **~550ms** | **Nhanh hơn 10x so với tìm kiếm thủ công** |
-
----
-
-## 🧪 Tối ưu theo từng bước & Best Practices (v8.1)
-
-> Tài liệu này tổng hợp các kỹ thuật tối ưu đã triển khai trong source, giúp chạy nhanh hơn, ổn định hơn, và đánh giá có số liệu đầy đủ ở cả FAST/QUALITY.
-
-- **Bước 00 – DAPT (PhoBERT-Law)**
-  - **Tokenizer giảm độ dài mẫu**: `max_length` rút gọn để tránh OOM khi không có GPU mạnh.
-  - **Dataset tạo theo batch nhỏ**: đảm bảo memory footprint thấp, vẫn đủ đa dạng để domain-adapt.
-
-- **Bước 01 – Environment & Data Processing**
-  - **Validation cấu trúc & file bắt buộc**: tự tạo thư mục thiếu; báo lỗi sớm nếu thiếu data.
-  - **Mapping tối ưu**: build `aid_map.pkl`, `doc_id_to_aids_complete.json` để truy xuất nhanh.
-  - **Split dữ liệu hợp lý**: tách train/val với số lượng tối thiểu theo config (tránh val quá nhỏ).
-
-- **Bước 02 – Hard Negative Mining & Chuẩn bị dữ liệu**
-  - **Hard negatives chất lượng**: dùng Bi-Encoder tạm để tìm negatives “khó”, tăng chất lượng Cross-Encoder.
-  - **Augmentation an toàn**: tăng đa dạng câu hỏi nhưng không phá hỏng semantics pháp luật.
-
-- **Bước 03 – Training tích hợp & Evaluation (quan trọng)**
-  - **Override mode sớm**: tất cả script hỗ trợ `--mode fast|quality`, set env trước khi import `config` ⇒ chọn đúng `config_fast.py`/`config_quality.py`.
-  - **TrainingArguments tương thích nhiều version**: dùng builder `build_training_args_compat(...)` chỉ truyền tham số mà transformers hiện tại hỗ trợ; tự đồng bộ evaluation/save strategy để tránh lỗi.
-  - **EarlyStopping an toàn**: chỉ bật khi version hỗ trợ evaluation strategy; tự tắt `load_best_model_at_end` nếu không đồng bộ được.
-  - **Tiền xử lý văn bản chắc chắn**: làm sạch unicode/ký tự lạ, tối thiểu độ dài, cắt đôi theo `max_length // 2` cho cặp query/document.
-  - **Tokenization cặp dài**: `truncation="only_second"` để ưu tiên giữ nguyên truy vấn, giảm warning overflow.
-  - **Stratify hợp lệ**: cố gắng `class_encode_column('label')` rồi `stratify_by_column='label'`; nếu không được thì fallback split ngẫu nhiên.
-  - **Fallback OOM**: tự giảm batch, rồi chuyển CPU nếu cần; dọn bộ nhớ CUDA giữa các lần thử.
-  - **FAISS build chuẩn**: encode toàn bộ corpus với Bi-Encoder đã train; lưu `faiss` + `index_to_aid.json` đồng bộ.
-  - **Evaluation ổn định (tại bước 03)**:
-    - Metrics dạng phẳng: `precision@k`, `recall@k`, `f1@k` (k ∈ {1,3,5,10,20,50}).
-    - Không loại cả batch khi có query trống kết quả; thay vào đó điền 0 cho query đó và vẫn tính metrics tổng.
-
-- **Bước 04 – Evaluate chuyên sâu (độc lập, có report)**
-  - **Override mode sớm**: `python scripts/04_evaluate_models.py --mode fast|quality` để dùng đúng config.
-  - **Kết quả retrieval/reranking**: dùng `BatchEvaluator` và luôn chuẩn hóa output về keys phẳng.
-  - **Per-query analysis**: tính precision/recall/F1 riêng từng câu hỏi; ghi số lượng AID đúng tìm thấy.
-  - **Kiểm tra phủ AID**: thống kê tỉ lệ ground-truth AID có mặt trong `index_to_aid.json` (nếu thấp, rebuild index ở bước 03).
-  - **Báo cáo chuẩn**: `EvaluationReporter.create_comprehensive_report(...)` + `save_report()` vào `reports/` với timestamp.
-
-### FAST vs QUALITY (tóm tắt khác biệt chính)
-
-- **FAST**: epochs thấp, batch nhỏ, `CROSS/LIGHT_MAX_LENGTH≈192`, `TOP_K_RETRIEVAL≈80`, `TOP_K_LIGHT≈40`, `TOP_K_FINAL≈3`, không dùng FP16 (ưu tiên ổn định và tốc độ).
-- **QUALITY**: epochs/batch lớn hơn, `CROSS/LIGHT_MAX_LENGTH≈320`, `TOP_K_RETRIEVAL≈150`, `TOP_K_LIGHT≈80`, `TOP_K_FINAL≈7`, bật FP16 nếu khả dụng (ưu tiên chất lượng).
-
-### Xử lý văn bản dài (Long documents)
-
-- **Chunking theo token** với overlap (~50) và `truncation="only_second"` để giữ nguyên truy vấn.
-- **Gộp điểm thông minh**: lấy max score trên tất cả chunk của một văn bản để đại diện.
-- **Dedup đơn giản**: lọc các kết quả nội dung trùng lặp mức cao để danh sách gọn và đa dạng.
-
-### Logging & Theo dõi tiến trình
-
-- **Outline-aware**: log theo bước/hàm `[STEP {id}] [FUNC] ▶/◀` để dễ theo dõi tiến trình.
-- **Console/file gồm vị trí nguồn**: `[name] [func:line]` giúp truy vết chính xác đoạn code phát log.
-
-### Đảm bảo evaluation có số liệu (checklist nhanh)
-
-- Đã build lại FAISS bằng Bi-Encoder mới chưa? (chạy lại bước 03 hoặc `--start-step 03`).
-- Ground-truth AID có khớp format với `index_to_aid.json`? (xem thống kê phủ AID in ra ở bước 04).
-- K đang dùng có phù hợp? `TOP_K_RETRIEVAL` quá nhỏ dễ bỏ lỡ ground-truth.
-- Đang chạy đúng mode? Dùng `--mode fast|quality` hoặc `switch_performance_mode.py --immediate` trước khi chạy.
-
-### Chạy App theo mode
-
-- Windows (PowerShell):
-  ```powershell
-  setx LAWBOT_PERFORMANCE_MODE fast
-  # Mở terminal mới hoặc:
-  $env:LAWBOT_PERFORMANCE_MODE="fast"; streamlit run app/app.py
-  ```
-- Linux/macOS:
-  ```bash
-  LAWBOT_PERFORMANCE_MODE=fast streamlit run app/app.py
-  ```
-
-
-## 🛠️ **Phát triển và bảo trì**
-
-### **API Documentation**
-
-#### **LegalQAPipeline**
-
-Class chính để tương tác với hệ thống.
-
-```python
-from core.pipeline import LegalQAPipeline
-
-# Khởi tạo
-pipeline = LegalQAPipeline()
-
-# Kiểm tra trạng thái
-if pipeline.is_ready:
-    print("Pipeline sẵn sàng!")
-else:
-    print("Pipeline chưa sẵn sàng!")
-```
-
-#### **Methods**
-
-##### `predict(query, top_k_retrieval=100, top_k_final=5)`
-
-Dự đoán câu trả lời cho câu hỏi.
-
-**Parameters**:
-- `query` (str): Câu hỏi cần trả lời
-- `top_k_retrieval` (int): Số lượng kết quả retrieval (default: 100)
-- `top_k_final` (int): Số lượng kết quả cuối cùng (default: 5)
-
-**Returns**:
-- `List[Dict]`: Danh sách kết quả với format:
-  ```python
-  [
-      {
-          "aid": "law_1_113",
-          "content": "Điều 113: Người lao động được nghỉ phép năm...",
-          "retrieval_score": 0.85,
-          "rerank_score": 0.92
-      },
-      # ...
-  ]
-  ```
-
-**Ví dụ sử dụng**:
-```python
-# Input
-query = "Người lao động được nghỉ phép bao nhiêu ngày?"
-
-# Output
-results = [
-    {
-        "aid": "law_1_113",
-        "content": "Điều 113. Người lao động được nghỉ phép năm 12 ngày làm việc...",
-        "retrieval_score": 0.85,
-        "rerank_score": 0.92
-    },
-    {
-        "aid": "law_1_114",
-        "content": "Điều 114. Thời gian nghỉ phép năm được tính theo năm làm việc...",
-        "retrieval_score": 0.78,
-        "rerank_score": 0.87
-    }
-]
-```
-
-##### `retrieve(query, top_k=100)`
-
-Chỉ thực hiện retrieval (tầng 1).
-
-**Parameters**:
-- `query` (str): Câu hỏi
-- `top_k` (int): Số lượng kết quả
-
-**Returns**:
-- `Tuple[List[str], List[float]]`: (aids, scores)
-
-**Ví dụ**:
-```python
-# Input
-query = "Điều kiện thành lập doanh nghiệp?"
-
-# Output
-aids = ["law_2_15", "law_2_16", "law_2_17", ...]
-scores = [0.95, 0.87, 0.82, ...]
-```
-
-##### `rerank(query, retrieved_aids, retrieved_distances)`
-
-Chỉ thực hiện reranking (tầng 2).
-
-**Parameters**:
-- `query` (str): Câu hỏi
-- `retrieved_aids` (List[str]): Danh sách AIDs từ retrieval
-- `retrieved_distances` (List[float]): Điểm số từ retrieval
-
-**Returns**:
-- `List[Dict]`: Kết quả đã rerank
-
-**Ví dụ**:
-```python
-# Input
-query = "Người lao động được nghỉ phép bao nhiêu ngày?"
-retrieved_aids = ["law_1_113", "law_1_114", "law_1_115"]
-retrieved_distances = [0.85, 0.78, 0.72]
-
-# Output
-reranked_results = [
-    {
-        "aid": "law_1_113",
-        "content": "Điều 113. Người lao động được nghỉ phép năm...",
-        "retrieval_score": 0.85,
-        "rerank_score": 0.92
-    },
-    {
-        "aid": "law_1_114", 
-        "content": "Điều 114. Thời gian nghỉ phép năm...",
-        "retrieval_score": 0.78,
-        "rerank_score": 0.87
-    }
-]
+    T3_3 --> F[✅ Hiển thị kết quả cho người dùng]
 ```
 
-### **Utilities**
+### 2. Luồng dữ liệu & huấn luyện (Data & Training Flow)
 
-#### **Dataset Filtering Utility**
+Sơ đồ này mô tả quy trình "nhà máy" sản xuất ra các mô hình AI, từ dữ liệu thô ban đầu, qua các bước xử lý kỹ thuật như "Hard Negative Mining", đến huấn luyện và đánh giá.
 
-Script để lọc dataset trước khi chạy pipeline chính:
+```mermaid
+graph LR
+    subgraph Đầu vào
+        A[📁 **Dữ liệu thô**<br/>legal_corpus.json, train.json]
+    end
 
-```bash
-# Chạy filtering utility
-python scripts/utils/run_filter.py
+    subgraph Bước 0: Thích ứng Miền - Unsupervised Domain Adaptation
+        A_corpus[legal_corpus.json] --> DA1{**DAPT: Domain-Adaptive Pre-training**<br/>Tiếp tục huấn luyện mô hình ngôn ngữ<br/>trên kho văn bản luật - MLM objective<br/>*Mục đích: Giúp mô hình hiểu ngôn ngữ pháp lý*}
+        DA1 --> DA2{**TSDAE: Denoising AutoEncoder**<br/>Fine-tune Bi-Encoder một cách không giám sát<br/>để tạo ra sentence embedding tốt hơn<br/>*Mục đích: Cải thiện chất lượng vector cho Tầng 1*}
+        DA2 --> M_base[🤖 **Mô hình nền tảng**<br/>đã được thích ứng với miền pháp lý]
+    end
 
-# Hoặc chạy trực tiếp
-python scripts/utils/filter_dataset.py
-```
-
-**Chức năng**:
-- Lọc bỏ samples có ground truth không phù hợp
-- Giữ lại ~100-200 samples chất lượng cao
-- Cải thiện chất lượng dữ liệu training
-
-#### **Project Structure Checker**
-
-Kiểm tra cấu trúc project và best practices:
-
-```bash
-python scripts/utils/check_project.py
-```
-
-**Chức năng**:
-- Kiểm tra cấu trúc thư mục
-- Validate naming conventions
-- Kiểm tra documentation
-- Đảm bảo best practices
-
-### **Troubleshooting**
-
-#### **🔧 Lỗi thường gặp**
-
-**1. GPU Issues**
-```bash
-# Kiểm tra GPU availability
-python -c "import torch; print(f'GPU: {torch.cuda.is_available()}')"
-
-# Force CPU training nếu cần
-export CUDA_VISIBLE_DEVICES=""
-python run_pipeline.py
-```
-
-**2. Memory Issues**
-```bash
-# Giảm batch size
-export LAWBOT_BI_ENCODER_BATCH_SIZE=8
-export LAWBOT_CROSS_ENCODER_BATCH_SIZE=4
-
-# Tắt mixed precision
-export LAWBOT_FP16_TRAINING=false
-```
-
-**3. Model Loading Issues**
-```bash
-# Kiểm tra model paths
-ls -la models/
-ls -la models/phobert-law/
-ls -la models/bi-encoder/
-
-# Rebuild models nếu cần
-python scripts/00_adapt_model.py
-python scripts/03_train_models.py
-```
-
-**4. Data Loading Issues**
-```bash
-# Kiểm tra data files
-ls -la data/raw/
-ls -la data/processed/
-
-# Validate data structure
-python scripts/utils/check_project.py
-```
+    subgraph Bước 1 & 2: Chuẩn bị Dữ liệu Giám sát - scripts/01_... và scripts/02_...
+        A --> B{"Tạo aid_map - AID -> Content"}
+        A --> C{"Tạo các cặp query, positive_aid<br/>từ train.json"}
+        
+        C & M_base --> D{**Kỹ thuật chính: Hard Negative Mining**<br/>Dùng Bi-Encoder đã thích ứng để<br/>tìm các câu trả lời sai nhưng khó<br/>giúp mô hình học sâu hơn về ngữ nghĩa}
+        D --> E[📄 **Dữ liệu huấn luyện có giám sát**]
+    end
 
-#### **⚡ Performance Optimization Tips**
+    subgraph Bước 3: Huấn luyện có Giám sát - scripts/03_...
+        E & M_base --> F[**Huấn luyện Bi-Encoder - Retriever**<br/>- **Input:** Các cặp query, positive, negative<br/>- **Mục tiêu:** Tối ưu không gian vector<br/>- **Loss:** CosineSimilarityLoss]
+        F --> G[**Xây dựng FAISS Index**<br/>Mã hóa toàn bộ legal_corpus<br/>bằng Bi-Encoder đã fine-tune]
+        
+        E & M_base --> H[**Huấn luyện Rerankers - Cross-Encoders**<br/>- **Input:** Các bộ ba query, document, label<br/>- **Mục tiêu:** Phân loại cặp liên quan hoặc không<br/>- **Loss:** CrossEntropyLoss]
+    end
 
-**1. GPU Optimization**
-```bash
-# Tối ưu GPU memory
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+    subgraph Bước 4: Đánh giá - scripts/04_...
+        G & H -- Mô hình và Index đã huấn luyện --> I{Đánh giá trên tập public_test}
+        I --> J[📊 **Báo cáo hiệu suất chi tiết**<br/>Precision@k, Recall@k, F1@k]
+    end
 
-# Bật mixed precision
-export LAWBOT_FP16_TRAINING=true
+    J --> K[🏆 **Mô hình sẵn sàng để sử dụng**]
 ```
 
-**2. System Optimization**
-```bash
-# Tăng file descriptors
-ulimit -n 65536
+### 3. Giải thích Kỹ thuật Chi tiết
 
-# Tối ưu CPU cores
-export OMP_NUM_THREADS=8
-```
-
-**3. Pipeline Optimization**
-```bash
-# Skip DAPT nếu không cần
-python run_pipeline.py --no-dapt
-
-# Chạy từ bước cụ thể
-python run_pipeline.py --start-step 02
-```
-
-### **Monitoring & Logging**
-
-#### **1. Performance Monitoring**
-```bash
-# Monitor GPU usage
-nvidia-smi -l 1
-
-# Monitor memory usage
-htop
-
-# Check logs
-tail -f logs/pipeline.log
-```
+Phần này sẽ đi sâu vào các khái niệm kỹ thuật cốt lõi được đề cập trong sơ đồ.
 
-#### **2. Quality Metrics**
-```bash
-# Check evaluation results
-ls -la reports/
+#### **Bi-Encoder vs. Cross-Encoder: Sự khác biệt cốt lõi**
 
-# View latest report
-cat reports/evaluation_report_*.json
-```
-
----
-
-## ❓ **Hỏi đáp**
-
-### **Câu hỏi thường gặp**
-
-**Q: LawBot có thể thay thế luật sư không?**
-A: Không, LawBot chỉ là công cụ hỗ trợ tra cứu pháp luật. Để có tư vấn pháp lý chuyên sâu, bạn nên tham khảo ý kiến của luật sư.
-
-**Q: Dữ liệu pháp luật có được cập nhật thường xuyên không?**
-A: Dữ liệu pháp luật cần được cập nhật thủ công. Bạn có thể thêm văn bản pháp luật mới vào file `legal_corpus.json` và chạy lại pipeline.
-
-**Q: Có thể sử dụng LawBot cho pháp luật nước khác không?**
-A: Hiện tại LawBot được thiết kế đặc biệt cho pháp luật Việt Nam. Để sử dụng cho nước khác, cần thay đổi dữ liệu training và có thể cần điều chỉnh model.
-
-**Q: Làm thế nào để cải thiện độ chính xác?**
-A: Có thể cải thiện bằng cách:
-- Tăng chất lượng dữ liệu training
-- Điều chỉnh hyperparameters
-- Sử dụng model lớn hơn
-- Thêm data augmentation
-
-**Q: Có thể chạy LawBot trên CPU không?**
-A: Có, LawBot có thể chạy trên CPU nhưng sẽ chậm hơn đáng kể so với GPU. Để force CPU mode, sử dụng:
-```bash
-export CUDA_VISIBLE_DEVICES=""
-python run_pipeline.py
-```
+| Đặc điểm | **Bi-Encoder (Retriever - Tầng 1)** | **Cross-Encoder (Reranker - Tầng 2 & 3)** |
+| :--- | :--- | :--- |
+| **Kiến trúc** | Xử lý `query` và `document` **riêng biệt**, tạo ra 2 vector độc lập. | Xử lý `query` và `document` **cùng lúc** trong một chuỗi duy nhất: `[CLS] query [SEP] document [SEP]`. |
+| **Tốc độ** | **Rất nhanh.** Vector của toàn bộ kho pháp luật có thể được tính toán trước và lưu vào FAISS. Khi có câu hỏi mới, chỉ cần mã hóa câu hỏi và tìm kiếm. | **Chậm.** Phải tính toán lại từ đầu cho mỗi cặp (query, document). Không thể tính toán trước. |
+| **Độ chính xác** | **Thấp hơn.** Chỉ so sánh sự tương đồng tổng thể giữa 2 vector. | **Cao hơn.** Mô hình có thể học được sự tương tác sâu sắc giữa các từ trong query và document nhờ cơ chế self-attention. |
+| **Mục đích** | **Tìm kiếm (Retrieval):** Lọc ra một tập hợp lớn các ứng viên tiềm năng từ hàng triệu tài liệu. Tối ưu cho Recall. | **Xếp hạng lại (Reranking):** Sắp xếp lại một tập hợp nhỏ các ứng viên để tìm ra câu trả lời chính xác nhất. Tối ưu cho Precision. |
 
-### **Liên hệ hỗ trợ**
+> Kiến trúc 3 tầng của project này kết hợp ưu điểm của cả hai: **tốc độ của Bi-Encoder** và **độ chính xác của Cross-Encoder**.
 
-- **GitHub Issues**: [Tạo issue](https://github.com/lawbot-team/lawbot/issues)
-- **Email**: support@lawbot.com
-- **Documentation**: [Wiki](https://github.com/lawbot-team/lawbot/wiki)
+#### **Tại sao Hard Negative Mining lại quan trọng?**
 
----
+- **Negative thông thường (Random Negative):** Là một văn bản được chọn ngẫu nhiên. Thường thì mô hình sẽ dễ dàng nhận ra nó không liên quan đến câu hỏi. (Ví dụ: câu hỏi về luật lao động, negative là luật đất đai).
+- **Hard Negative:** Là một văn bản sai, nhưng lại "trông có vẻ" đúng. Nó có thể chứa nhiều từ khóa giống với câu hỏi nhưng ngữ nghĩa lại khác.
+- **Lợi ích:** Bằng cách huấn luyện với Hard Negatives, chúng ta buộc mô hình phải học sâu hơn về ngữ nghĩa thay vì chỉ dựa vào từ khóa bề mặt. Điều này giúp mô hình phân biệt được những khác biệt tinh vi và cải thiện đáng kể độ chính xác.
 
-## 📚 **Tài liệu tham khảo**
+#### **FAISS và `IndexFlatIP`**
 
-### **Papers**
-- [Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks](https://arxiv.org/abs/1908.10084)
-- [Cross-Encoders vs. Bi-Encoders for Zero-Shot Classification](https://arxiv.org/abs/2108.08877)
-- [Dense Passage Retrieval for Open-Domain Question Answering](https://arxiv.org/abs/2004.04906)
+- **FAISS (Facebook AI Similarity Search):** Là một thư viện được tối ưu hóa cho việc tìm kiếm tương đồng trên các tập vector cực lớn.
+- **`IndexFlatIP`:** Là một loại index trong FAISS.
+    - **`Flat`:** Có nghĩa là nó sẽ so sánh "brute-force" vector câu hỏi với tất cả các vector trong kho. Mặc dù gọi là brute-force, nó vẫn cực kỳ nhanh nhờ các tối ưu hóa của FAISS.
+    - **`IP` (Inner Product):** Phép tính tích vô hướng. Khi các vector đã được **chuẩn hóa L2** (độ dài vector bằng 1), thì **tích vô hướng chính là giá trị của Cosine Similarity**. Đây là một kỹ thuật tối ưu hóa phổ biến để tìm kiếm theo độ tương đồng cosine.
 
-### **Libraries**
-- [Sentence Transformers](https://www.sbert.net/)
-- [FAISS](https://github.com/facebookresearch/faiss)
-- [Transformers](https://huggingface.co/transformers/)
-- [PyTorch](https://pytorch.org/)
+#### **Lựa chọn Loss Function**
 
-### **Datasets**
-- [Vietnamese Legal Corpus](https://github.com/lawbot-team/vietnamese-legal-corpus)
-- [Legal QA Dataset](https://github.com/lawbot-team/legal-qa-dataset)
+- **`CosineSimilarityLoss` (cho Bi-Encoder):** Mục tiêu của hàm loss này là tối ưu hóa Cosine Similarity giữa các cặp vector. Nó sẽ cố gắng đưa giá trị similarity của các cặp *positive* (query, câu trả lời đúng) tiến về 1, và của các cặp *negative* tiến về -1 (hoặc 0). Điều này phù hợp với việc sắp xếp các văn bản trong không gian vector.
+- **`CrossEntropyLoss` (cho Cross-Encoder):** Cross-Encoder hoạt động như một mô hình phân loại (classification). Nó phân loại cặp (query, document) là "liên quan" (label 1) hay "không liên quan" (label 0). `CrossEntropyLoss` là hàm loss tiêu chuẩn và hiệu quả nhất cho các bài toán phân loại như vậy.
 
----
+### 4. Kỹ thuật Tối ưu Hóa Nâng cao (Unsupervised Domain Adaptation)
 
-## 🤝 **Đóng góp**
+Trước khi đi vào huấn luyện có giám sát (supervised training) với các cặp câu hỏi-trả lời, project này sử dụng hai kỹ thuật **huấn luyện không giám sát (unsupervised)** tiên tiến để giúp mô hình ngôn ngữ "thích ứng" với miền kiến thức pháp luật. Đây là một bước tiền xử lý quan trọng giúp cải thiện đáng kể hiệu suất cuối cùng.
 
-Chúng tôi rất hoan nghênh mọi đóng góp! Vui lòng đọc `CONTRIBUTING.md` để biết thêm chi tiết.
+#### **DAPT (Domain-Adaptive Pre-training)**
 
-## 📄 **License**
+*   **Là gì?** DAPT là quá trình "huấn luyện tiếp" (continue pre-training) một mô hình ngôn ngữ đã được huấn luyện trước (như `PhoBERT`) trên một kho văn bản lớn và chuyên biệt (ở đây là toàn bộ `legal_corpus.json`).
+*   **Tại sao cần?** Các mô hình ngôn ngữ không được dạy về từ vựng, thuật ngữ và cấu trúc câu phức tạp của văn bản pháp luật. DAPT giúp mô hình "học ngôn ngữ pháp lý", làm quen với các khái niệm và ngữ cảnh đặc thù trước khi thực hiện nhiệm vụ chính. Quá trình này thường sử dụng mục tiêu huấn luyện là Masked Language Modeling (MLM), tương tự như khi huấn luyện BERT từ đầu.
+*   **Kết quả:** Một mô hình ngôn ngữ nền tảng có khả năng hiểu sâu hơn về miền pháp luật.
 
-Dự án này được cấp phép theo MIT License.
+#### **TSDAE (Transformer-based Denoising AutoEncoder)**
 
----
+*   **Là gì?** TSDAE là một phương pháp không giám sát để fine-tune các mô hình tạo **sentence embedding** (như Bi-Encoder).
+*   **Hoạt động như thế nào?**
+    1.  Lấy một câu trong kho văn bản pháp luật.
+    2.  Tạo ra một phiên bản "nhiễu" (noisy) của câu đó bằng cách xóa hoặc tráo đổi một vài từ.
+    3.  Yêu cầu mô hình (Encoder) đọc câu bị nhiễu và tạo ra một vector embedding.
+    4.  Sau đó, một bộ giải mã (Decoder) sẽ cố gắng **tái tạo lại vector embedding của câu gốc (không nhiễu)** từ vector của câu nhiễu.
+*   **Tại sao cần?** Quá trình này buộc mô hình phải học cách nắm bắt ý nghĩa cốt lõi của câu, bỏ qua các chi tiết nhiễu. Nó giúp Bi-Encoder tạo ra các vector câu (sentence embeddings) mạnh mẽ, ổn định và giàu ngữ nghĩa hơn, điều này cực kỳ quan trọng cho chất lượng của Tầng 1 (Retrieval).
 
-**Made with ❤️ by LawBot Team**
+> **Tóm lại:** DAPT và TSDAE là các bước "khởi động" không giám sát, giúp tạo ra một mô hình nền tảng **đã được chuyên môn hóa cho lĩnh vực pháp luật**. Mô hình nền tảng này sau đó sẽ được sử dụng cho cả việc khai thác Hard Negatives và cho quá trình huấn luyện có giám sát cuối cùng, mang lại hiệu quả vượt trội.

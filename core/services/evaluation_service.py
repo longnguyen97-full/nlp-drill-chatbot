@@ -13,6 +13,38 @@ from datetime import datetime
 import traceback
 
 
+def precision_at_k(relevant: List[str], retrieved: List[str], k: int) -> float:
+    """Calculate Precision@K"""
+    if not retrieved or k == 0:
+        return 0.0
+
+    relevant_set = set(relevant)
+    retrieved_k = retrieved[:k]
+    relevant_retrieved = sum(1 for item in retrieved_k if item in relevant_set)
+    return relevant_retrieved / len(retrieved_k)
+
+
+def recall_at_k(relevant: List[str], retrieved: List[str], k: int) -> float:
+    """Calculate Recall@K"""
+    if not relevant or k == 0:
+        return 0.0
+
+    relevant_set = set(relevant)
+    retrieved_k = retrieved[:k]
+    relevant_retrieved = sum(1 for item in retrieved_k if item in relevant_set)
+    return relevant_retrieved / len(relevant_set)
+
+
+def f1_at_k(relevant: List[str], retrieved: List[str], k: int) -> float:
+    """Calculate F1@K"""
+    precision = precision_at_k(relevant, retrieved, k)
+    recall = recall_at_k(relevant, retrieved, k)
+
+    if precision + recall == 0:
+        return 0.0
+    return 2 * (precision * recall) / (precision + recall)
+
+
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle numpy arrays and other non-serializable objects."""
 
@@ -87,9 +119,8 @@ class BatchEvaluator:
         if not self.validate_inputs(queries, ground_truth_sets, retrieved_aids_batch):
             return {}
 
-        from core.utils.evaluation import precision_at_k, recall_at_k, f1_at_k
         # Import canonicalizer to ensure comparisons are consistent
-        from core.utils.aid_utils import canonicalize_aid_list, canonicalize_aid_set
+        from ..aid_utils import canonicalize_aid_list, canonicalize_aid_set
 
         metrics = {}
         start_time = time.time()

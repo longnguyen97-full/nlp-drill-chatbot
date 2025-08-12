@@ -10,7 +10,7 @@ import torch
 import numpy as np
 from typing import Dict, Any, List, Optional, Union, Tuple
 from transformers import PreTrainedTokenizer
-from core.logging_system import get_logger
+from core.services.logging_service import get_logger
 import traceback
 import time
 from contextlib import contextmanager

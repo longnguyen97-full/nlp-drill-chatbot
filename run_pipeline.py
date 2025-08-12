@@ -97,13 +97,13 @@ print(f"[CONFIG] Final PERFORMANCE_MODE: {PERFORMANCE_MODE}")
 
 # Import progress utilities
 from core.progress_tracker import ProgressTracker, StepLogger, create_summary_report
-from core.logging_system import (
+from core.services.logging_service import (
+    get_logger,
     setup_unified_logging,
     log_step_start,
     log_step_end,
     log_error,
     log_session_end,
-    get_logger,
 )
 
 # --- Checkpoint System ---
@@ -175,6 +175,7 @@ class LegalQAPipeline:
         self.skip_filtering = skip_filtering
         self.include_dapt = include_dapt
         self.resume = resume
+        self.start_step_name = None
         self.project_root = Path(__file__).parent
         self.scripts_dir = self.project_root / "scripts"
 
@@ -202,52 +203,50 @@ class LegalQAPipeline:
         self.logger.info(f"[START] Bat dau Legal QA Pipeline - Log file: {log_file}")
 
     def _define_maximum_optimized_pipeline_steps(self) -> List[Dict]:
-        """Dinh nghia 4 buoc chinh toi uu cuc dai cho v8.0 (Integrated Optimized Training)"""
+        """
+        Định nghĩa các bước của pipeline được tối ưu hóa.
+        Bao gồm cả các bước tùy chọn như DAPT/TSDAE.
+        """
         steps = []
-
-        # Bước 0: DAPT (tùy chọn)
         if self.include_dapt:
             steps.append(
                 {
-                    "id": "00",
-                    "name": "Domain-Adaptive Pre-training (DAPT) - PhoBERT-Law",
-                    "script": "00_adapt_model.py",
-                    "description": "Chuyen môn hóa PhoBERT thành PhoBERT-Law cho pháp luật với tối ưu hóa cao cấp",
-                    "required": False,  # Optional but recommended
+                    "id": "01",
+                    "name": "Prepare Environment & Unsupervised Adaptation",
+                    "script": "01_prepare_environment.py",
+                    "description": "Kiem tra moi truong, validate config, va chay unsupervised adaptation (DAPT/TSDAE) de tao base models.",
                     "estimated_time": "60-120 phut",
+                    "required": True,
                 }
             )
-
-        # Các bước bắt buộc - Tối ưu hóa tích hợp
-        steps.extend(
-            [
-                {
-                    "id": "01",
-                    "name": "Environment & Data Processing & Readiness Check Pipeline",
-                    "script": "01_check_environment.py",
-                    "description": "Comprehensive environment check + Configuration validation + Model status check + Data validation + Processing + Splitting + Mapping validation với tối ưu hóa",
-                    "required": True,
-                    "estimated_time": "15-20 phut",
-                },
-                {
-                    "id": "02",
-                    "name": "Training Data Preparation Pipeline",
-                    "script": "02_prepare_training_data.py",
-                    "description": "Advanced Hard Negative Mining + Create triplets/pairs + Merge data + Augmentation + Save training files",
-                    "required": True,
-                    "estimated_time": "10-15 phut",
-                },
-                {
-                    "id": "03",
-                    "name": "Integrated Model Training & Comprehensive Evaluation Pipeline",
-                    "script": "03_train_models.py",
-                    "description": "Optimized Bi-Encoder training + FAISS index + Cross-Encoder training + Light Reranker training + Comprehensive Evaluation với đầy đủ metrics",
-                    "required": True,
-                    "estimated_time": "120-200 phut",
-                },
-            ]
-        )
-
+        
+        steps.extend([
+            {
+                "id": "02",
+                "name": "Prepare Training Data",
+                "script": "02_prepare_data.py",
+                "args": ["--skip-filtering"] if self.skip_filtering else [],
+                "description": "Tao triplets va hard negatives cho training.",
+                "estimated_time": "30-90 phut",
+                "required": True,
+            },
+            {
+                "id": "03",
+                "name": "Train Models & Build Index",
+                "script": "03_train_pipeline.py",
+                "description": "Huan luyen Bi-Encoder, Cross-Encoder, Light Reranker va xay dung FAISS index.",
+                "estimated_time": "180-360 phut",
+                "required": True,
+            },
+            {
+                "id": "04",
+                "name": "Evaluate Pipeline",
+                "script": "04_evaluate_pipeline.py",
+                "description": "Danh gia toan dien hieu suat cua pipeline tren tap validation.",
+                "estimated_time": "20-40 phut",
+                "required": True,
+            },
+        ])
         return steps
 
     def run_step(self, step: Dict) -> bool:
@@ -257,6 +256,15 @@ class LegalQAPipeline:
         script_name = step["script"]
         args = step.get("args", [])
         step_description = step.get("description", "")
+
+        # Bo qua buoc 00 DAPT cu neu co
+        if step_id == "00":
+            self.logger.warning(
+                "[DEPRECATED] Buoc 00 (DAPT) da duoc hop nhat vao buoc 01. Bo qua..."
+            )
+            # Tu dong danh dau la hoan thanh de checkpoint khong bi mac ket
+            mark_step_complete(self.checkpoint_state, step_id)
+            return True
 
         # Kiểm tra checkpoint - nếu bước đã hoàn thành thì bỏ qua
         if is_step_complete(self.checkpoint_state, step_id):
@@ -346,6 +354,12 @@ class LegalQAPipeline:
                         step_logger.func_start("_train_reranker (Light-Reranker)")
                     if "STEP 5: Comprehensive Evaluation" in output:
                         step_logger.func_start("run_comprehensive_evaluation")
+                    # DEPRECATED - remove in next version
+                    if "Running evaluation for Tier-1: Retrieval" in output:
+                        step_logger.func_start("evaluate_tier1_retrieval")
+                    if "Running evaluation for Tier-3: Reranking" in output:
+                        step_logger.func_start("evaluate_tier3_reranking_strong_only")
+
 
                     if "[BI-ENCODER] Training complete." in output:
                         step_logger.func_end("train_bi_encoder_optimized")
@@ -357,6 +371,11 @@ class LegalQAPipeline:
                         step_logger.func_end("_train_reranker (Light-Reranker)")
                     if "📊 COMPREHENSIVE EVALUATION RESULTS:" in output:
                         step_logger.func_end("run_comprehensive_evaluation")
+                    # DEPRECATED - remove in next version
+                    if "Tier-1 Retrieval Metrics" in output:
+                        step_logger.func_end("evaluate_tier1_retrieval")
+                    if "Tier-3 Reranking Metrics (Strong Only)" in output:
+                        step_logger.func_end("evaluate_tier3_reranking_strong_only")
 
                     # Stream child output with clear, non-duplicated prefix
                     step_logger.step_progress(
@@ -539,9 +558,9 @@ class LegalQAPipeline:
         self.logger.info(
             f"[STATS] Thong ke: Thanh cong {successful_steps}, That bai {failed_steps}, Bo qua {skipped_steps}"
         )
-        self.logger.info("[WIN] He thong Legal QA v8.0 da san sang su dung!")
+        self.logger.info("[WIN] He thong Legal QA v8.1 (Refactored) da san sang su dung!")
         self.logger.info(
-            "[NOTE] Pipeline da duoc toi uu voi 4 buoc chinh (Integrated Optimized Training) va evaluation toan dien!"
+            "[NOTE] Pipeline da duoc tai cau truc voi 4 buoc logic va ro rang!"
         )
 
         # Xóa checkpoint khi hoàn thành
@@ -601,69 +620,63 @@ class LegalQAPipeline:
 
 
 def main():
-    """Ham chinh"""
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Legal QA Pipeline v8.0")
+    parser = argparse.ArgumentParser(description="LawBot v8.1 - Integrated Training & Evaluation Pipeline")
     parser.add_argument(
         "--mode",
+        type=str,
+        default=None,
         choices=["fast", "quality"],
-        help="Override performance mode for this run (fast|quality).",
+        help="Set performance mode (overrides environment variable)",
     )
-    parser.add_argument("--start-step", help="Bat dau tu buoc cu the (e.g., 02)")
     parser.add_argument(
-        "--skip-filtering", action="store_true", help="Bo qua filtering dataset"
+        "--skip-filtering",
+        action="store_true",
+        help="Skip the dataset filtering step.",
     )
-    parser.add_argument("--no-dapt", action="store_true", help="Bo qua DAPT step")
     parser.add_argument(
-        "--no-resume", action="store_true", help="Khong resume tu checkpoint"
+        "--include-dapt",
+        action="store_true",
+        help="Include the optional DAPT/TSDAE unsupervised adaptation step.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the last failed step.",
+    )
+    parser.add_argument(
+        "--start-step",
+        type=str,
+        default=None,
+        help="Start execution from a specific step ID (e.g., '02').",
+    )
+    parser.add_argument(
+        "--show-steps",
+        action="store_true",
+        help="Show all available pipeline steps and exit.",
     )
     parser.add_argument(
         "--clear-checkpoint",
         action="store_true",
-        help="Xoa checkpoint va chay lai tu dau",
+        help="Clear any existing checkpoint and start fresh.",
     )
-    parser.add_argument(
-        "--show-steps", action="store_true", help="Hien thi danh sach cac buoc"
-    )
-
     args = parser.parse_args()
 
-    # Ensure env reflects --mode (redundant safety; early pre-parse already applied)
-    if args.mode:
-        os.environ["LAWBOT_PERFORMANCE_MODE"] = args.mode
-
-    # Tao pipeline
-    pipeline = LegalQAPipeline(
-        skip_filtering=args.skip_filtering,
-        include_dapt=not args.no_dapt,
-        resume=not args.no_resume,
+    # Create and run pipeline instance
+    pipeline_runner = LegalQAPipeline(
+        skip_filtering=args.skip_filtering, 
+        include_dapt=args.include_dapt, 
+        resume=args.resume
     )
 
-    # Clear checkpoint nếu được yêu cầu
-    if args.clear_checkpoint:
-        pipeline.clear_checkpoint()
-
-    # Show steps nếu được yêu cầu
     if args.show_steps:
-        pipeline.show_steps()
+        pipeline_runner.show_steps()
         return
 
-    # Chay pipeline
-    success = pipeline.run_pipeline(start_step=args.start_step)
-
-    if success:
-        print("\n" + "=" * 80)
-        print("🎉 PIPELINE HOAN THANH THANH CONG!")
-        print("🚀 He thong Legal QA v8.0 da san sang su dung!")
-        print("=" * 80)
-    else:
-        print("\n" + "=" * 80)
-        print("❌ PIPELINE THAT BAI!")
-        print("💡 Ban co the resume tu buoc bi loi bang cach chay:")
-        print("   python run_pipeline.py --start-step <step_id>")
-        print("=" * 80)
-
+    if args.clear_checkpoint:
+        pipeline_runner.clear_checkpoint()
+        return
+        
+    pipeline_runner.run_pipeline(start_step=args.start_step)
 
 if __name__ == "__main__":
     main()

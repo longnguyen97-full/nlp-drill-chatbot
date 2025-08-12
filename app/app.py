@@ -661,20 +661,18 @@ elif page == "📊 Kết quả Training":
                     st.metric("Tầng 2 (Light) - P/R/F1", f"{light_res.get('precision',0):.3f} / {light_res.get('recall',0):.3f} / {light_res.get('f1',0):.3f}")
                 else:
                     st.info("Không có kết quả Tầng 2 cho query này")
-            with cc2:
+            with cc3:
                 st.metric("Tầng 3 (Strong) - P/R/F1", f"{strong.get('precision',0):.3f} / {strong.get('recall',0):.3f} / {strong.get('f1',0):.3f}")
             with cc4:
                 if casc:
                     st.metric("Cascaded - P/R/F1", f"{casc.get('precision',0):.3f} / {casc.get('recall',0):.3f} / {casc.get('f1',0):.3f}")
-                else:
-                    st.info("Không có kết quả Cascaded cho query này")
 
             t1, t2, t3, t4 = st.tabs(["Tầng 1 AIDs", "Tầng 2 (Light) AIDs", "Tầng 3 (Strong) AIDs", "Cascaded AIDs"])
             with t1:
                 st.text("\n".join(ret.get("aids", [])))
             with t2:
                 st.text("\n".join(light_res.get("aids", [])))
-            with t2:
+            with t3:
                 st.text("\n".join(strong.get("aids", [])))
             with t4:
                 st.text("\n".join(casc.get("aids", [])))

@@ -147,9 +147,10 @@ class StepLogger:
         """Log canh bao"""
         self.logger.warning(f"[STEP {self.step_name}] [WARN] {message}")
 
-    def error(self, message: str):
-        """Log loi"""
-        self.logger.error(f"[STEP {self.step_name}] [FAIL] {message}")
+    def error(self, message: str, exc_info: bool = False):
+        """Logs an error message, optionally including exception info."""
+        log_message = f"[{self.step_name}] [FAIL] {message}"
+        self.logger.error(log_message, exc_info=exc_info)
 
     def success(self, message: str):
         """Log thanh cong"""

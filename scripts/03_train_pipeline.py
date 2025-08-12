@@ -108,10 +108,10 @@ print(f"[CONFIG] Final PERFORMANCE_MODE: {PERFORMANCE_MODE}")
 # Import config after ensuring correct mode
 import config
 import importlib
-from core.logging_system import get_logger
+from core.services.logging_service import get_logger
 from core.pipeline import LegalQAPipeline
-from core.evaluation_reporter import BatchEvaluator, EvaluationReporter
-from core.utils.aid_utils import canonicalize_aid_set, canonicalize_aid_list
+from core.services.evaluation_service import BatchEvaluator, EvaluationReporter
+from core.aid_utils import canonicalize_aid_set, canonicalize_aid_list
 
 # Global logger
 logger = get_logger(__name__)
@@ -193,16 +193,17 @@ def create_bi_encoder_examples(triplets, data_type="Training"):
     logger.info(f"[BI-ENCODER] Creating {data_type} examples...")
     examples, skipped = [], 0
     for i, triplet in enumerate(triplets):
-        anchor = str(triplet.get("anchor", ""))
+        # Sửa khóa từ 'anchor' thành 'query' để khớp với dữ liệu từ bước 02
+        query = str(triplet.get("query", ""))
         positive = str(triplet.get("positive", ""))
         negative = str(triplet.get("negative", ""))
 
-        if not all((anchor.strip(), positive.strip(), negative.strip())):
+        if not all((query.strip(), positive.strip(), negative.strip())):
             skipped += 1
             continue
 
-        examples.append(InputExample(texts=[anchor, positive], label=1.0))
-        examples.append(InputExample(texts=[anchor, negative], label=0.0))
+        examples.append(InputExample(texts=[query, positive], label=1.0))
+        examples.append(InputExample(texts=[query, negative], label=0.0))
 
     logger.info(
         f"[BI-ENCODER] Created {len(examples)} {data_type} examples, skipped {skipped} invalid triplets."
@@ -238,7 +239,23 @@ def train_bi_encoder_optimized(bi_encoder_data):
         return None
 
     try:
-        model = SentenceTransformer(config.BI_ENCODER_MODEL_NAME)
+        # Determine the best model to load, prioritizing the specialized ones
+        tsdae_path = Path(config.TSDAE_ADAPTED_MODEL_PATH)
+        dapt_path = Path(config.DAPT_ADAPTED_MODEL_PATH)
+        base_model_name = config.BI_ENCODER_MODEL_NAME
+
+        model_to_load = None
+        if (tsdae_path / "pytorch_model.bin").exists():
+            model_to_load = str(tsdae_path)
+            logger.info(f"[BI-ENCODER] Found and will use TSDAE-adapted model from: {model_to_load}")
+        elif (dapt_path / "pytorch_model.bin").exists():
+            model_to_load = str(dapt_path)
+            logger.info(f"[BI-ENCODER] No TSDAE model found. Using DAPT-adapted model from: {model_to_load}")
+        else:
+            model_to_load = base_model_name
+            logger.info(f"[BI-ENCODER] No adapted models found. Using base model from HuggingFace: {model_to_load}")
+
+        model = SentenceTransformer(model_to_load)
         train_loss = losses.ContrastiveLoss(model)
 
         # Adaptive batch sizing based on memory
@@ -387,8 +404,8 @@ def build_faiss_index_optimized(model):
     """Xây dựng FAISS index từ model Bi-Encoder đã huấn luyện."""
     logger.info("[FAISS] Building FAISS index...")
     try:
-        from core.utils import parse_legal_corpus
-        from core.utils.aid_utils import canonicalize_aid_ascii
+        from core.io import parse_legal_corpus
+        from core.aid_utils import canonicalize_aid_ascii
 
         all_articles = parse_legal_corpus(config.LEGAL_CORPUS_PATH)
         if not all_articles:
@@ -512,10 +529,24 @@ def _prepare_reranker_data(raw_data, model_name):
 
 
 def _train_reranker(
-    model_name_or_path, training_data, training_args, max_length, model_log_name
+    base_model_name: str,
+    training_data: Dataset,
+    training_args: TrainingArguments,
+    max_length: int,
+    model_log_name: str,
 ):
     """Hàm chung để huấn luyện các mô hình Reranker."""
     try:
+        # Prioritize using the DAPT-adapted base model if it exists
+        dapt_path = Path(config.DAPT_ADAPTED_MODEL_PATH)
+        model_name_or_path = (
+            str(dapt_path)
+            if (dapt_path / "pytorch_model.bin").exists()
+            else base_model_name
+        )
+
+        logger.info(f"[{model_log_name}] Loading base model from: {model_name_or_path}")
+
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
         model = AutoModelForSequenceClassification.from_pretrained(
             model_name_or_path, num_labels=2
@@ -1091,9 +1122,9 @@ def main():
     logger.info("Creating necessary directories...")
     config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     config.INDEXES_DIR.mkdir(parents=True, exist_ok=True)
-    config.BI_ENCODER_PATH.mkdir(parents=True, exist_ok=True)
-    config.CROSS_ENCODER_PATH.mkdir(parents=True, exist_ok=True)
-    config.LIGHT_RERANKER_PATH.mkdir(parents=True, exist_ok=True)
+    Path(config.BI_ENCODER_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(config.CROSS_ENCODER_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(config.LIGHT_RERANKER_PATH).parent.mkdir(parents=True, exist_ok=True)
     logger.info("Directories created successfully")
 
     checkpoint_state = load_checkpoint()
@@ -1103,7 +1134,7 @@ def main():
         bi_encoder_data = load_jsonl_data(
             config.BI_ENCODER_TRAIN_MIXED_PATH, "Bi-Encoder"
         )
-        reranker_data = load_jsonl_data(config.TRAIN_PAIRS_MIXED_PATH, "Reranker")
+        reranker_data = load_jsonl_data(config.CROSS_ENCODER_TRAIN_PATH, "Reranker")
         if not bi_encoder_data or not reranker_data:
             raise RuntimeError("Failed to load necessary training data.")
 
@@ -1134,12 +1165,17 @@ def main():
             logger.info("STEP 3: Cross-Encoder Training...")
             dataset = _prepare_reranker_data(reranker_data, "Cross-Encoder")
             if dataset:
+                # Tính toán warmup_steps dưới dạng số nguyên
+                num_train_samples = len(dataset["train"])
+                warmup_steps = int(num_train_samples / config.CROSS_ENCODER_BATCH_SIZE * config.CROSS_ENCODER_EPOCHS * config.CROSS_ENCODER_WARMUP_RATIO)
+                logger.info(f"[Cross-Encoder] Calculated warmup steps: {warmup_steps}")
+
                 args = build_training_args_compat(
                     output_dir=str(config.CROSS_ENCODER_PATH),
                     num_train_epochs=config.CROSS_ENCODER_EPOCHS,
                     per_device_train_batch_size=config.CROSS_ENCODER_BATCH_SIZE,
                     learning_rate=config.CROSS_ENCODER_LR,
-                    warmup_steps=config.CROSS_ENCODER_WARMUP_RATIO,
+                    warmup_steps=warmup_steps,  # Truyền giá trị số nguyên
                     eval_steps=config.CROSS_ENCODER_EVAL_STEPS,
                     save_steps=config.CROSS_ENCODER_EVAL_STEPS * 2,
                     fp16=config.FP16_TRAINING,
@@ -1152,11 +1188,11 @@ def main():
                     load_best_model_at_end=False,
                 )
                 if not _train_reranker(
-                    config.CROSS_ENCODER_MODEL_NAME,
-                    dataset,
-                    args,
-                    config.CROSS_ENCODER_MAX_LENGTH,
-                    "Cross-Encoder",
+                    base_model_name=config.CROSS_ENCODER_MODEL_NAME,
+                    training_data=dataset,
+                    training_args=args,
+                    max_length=config.CROSS_ENCODER_MAX_LENGTH,
+                    model_log_name="Cross-Encoder",
                 ):
                     logger.error("Cross-Encoder training failed.")
                     raise RuntimeError("Cross-Encoder training failed.")
@@ -1194,11 +1230,11 @@ def main():
                     load_best_model_at_end=False,
                 )
                 if not _train_reranker(
-                    config.LIGHT_RERANKER_MODEL_NAME,
-                    dataset,
-                    args,
-                    config.LIGHT_RERANKER_MAX_LENGTH,
-                    "Light-Reranker",
+                    base_model_name=config.LIGHT_RERANKER_MODEL_NAME,
+                    training_data=dataset,
+                    training_args=args,
+                    max_length=config.LIGHT_RERANKER_MAX_LENGTH,
+                    model_log_name="Light-Reranker",
                 ):
                     logger.error("Light Reranker training failed.")
                     raise RuntimeError("Light Reranker training failed.")

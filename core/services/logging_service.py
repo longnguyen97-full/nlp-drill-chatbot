@@ -70,7 +70,7 @@ class UnifiedLogger:
         self.start_time = datetime.now()
 
         # Tao thu muc logs
-        logs_dir = Path(__file__).parent.parent / "logs"
+        logs_dir = Path(__file__).parent.parent.parent / "logs"
         logs_dir.mkdir(exist_ok=True)
 
         # Ten file log

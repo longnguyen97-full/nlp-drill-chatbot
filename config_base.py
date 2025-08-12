@@ -3,377 +3,193 @@
 Base Configuration for LawBot
 ============================
 
-This file contains common configuration settings and utility functions
-that are shared across all performance modes.
+Contains shared configuration settings, paths, and utility functions
+for all performance modes.
 """
 
 import os
-import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 import logging
 
-# ============================================================================
-# ENVIRONMENT VARIABLES SUPPORT WITH ENHANCED ERROR HANDLING
-# ============================================================================
+__all__ = [
+    # Environment
+    "ENVIRONMENT", "DEBUG",
+    # Core Directories
+    "ROOT_DIR", "DATA_DIR", "MODELS_DIR", "INDEXES_DIR", "REPORTS_DIR", "LOGS_DIR",
+    "DATA_RAW_DIR", "DATA_PROCESSED_DIR", "DATA_VALIDATION_DIR",
+    # Key File Paths
+    "LEGAL_CORPUS_PATH", "TRAIN_JSON_PATH", "PUBLIC_TEST_JSON_PATH",
+    "TRAIN_SPLIT_JSON_PATH", "VAL_SPLIT_JSON_PATH", "AID_MAP_PATH",
+    "BI_ENCODER_TRAIN_MIXED_PATH", "CROSS_ENCODER_TRAIN_PATH",
+    # Model & Index Paths
+    "BI_ENCODER_PATH", "CROSS_ENCODER_PATH", "LIGHT_RERANKER_PATH",
+    "DAPT_ADAPTED_MODEL_PATH", "TSDAE_ADAPTED_MODEL_PATH",
+    "FAISS_INDEX_PATH", "INDEX_TO_AID_PATH", "PHOBERT_LAW_PATH",
+    # Base Model Names
+    "BI_ENCODER_MODEL_NAME", "CROSS_ENCODER_MODEL_NAME", "LIGHT_RERANKER_MODEL_NAME",
+    # Domain Adaptation Config
+    "DAPT_MAX_LENGTH", "DAPT_DATASET_SIZE_LIMIT", "TSDAE_EPOCHS", "TSDAE_BATCH_SIZE",
+    # System & Error Handling
+    "MAX_RETRIES", "RETRY_DELAY_SECONDS", "FORCE_CPU_MODE",
+    # Env Var Getters
+    "get_env_var", "get_env_bool", "get_env_int", "get_env_float",
+    # DataLoader Params
+    "BI_ENCODER_DATALOADER_NUM_WORKERS", "BI_ENCODER_DATALOADER_PIN_MEMORY", "BI_ENCODER_DATALOADER_PREFETCH_FACTOR",
+    "CROSS_ENCODER_DATALOADER_NUM_WORKERS", "CROSS_ENCODER_DATALOADER_PIN_MEMORY", "CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR",
+    "LIGHT_RERANKER_DATALOADER_NUM_WORKERS",
+    # Bi-Encoder Training Params
+    "BI_ENCODER_LR", "BI_ENCODER_WARMUP_RATIO", "BI_ENCODER_EVAL_STEPS",
+    "BI_ENCODER_EARLY_STOPPING_PATIENCE", "BI_ENCODER_EARLY_STOPPING_THRESHOLD", "BI_ENCODER_GRADIENT_ACCUMULATION_STEPS",
+    # Cross-Encoder Training Params
+    "CROSS_ENCODER_LR", "CROSS_ENCODER_WARMUP_RATIO", "CROSS_ENCODER_EVAL_STEPS",
+    "CROSS_ENCODER_EARLY_STOPPING_PATIENCE", "CROSS_ENCODER_EARLY_STOPPING_THRESHOLD", "CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS",
+    # Light-Reranker Training Params
+    "LIGHT_RERANKER_LR", "LIGHT_RERANKER_WARMUP_RATIO", "LIGHT_RERANKER_EVAL_STEPS",
+    "LIGHT_RERANKER_EARLY_STOPPING_PATIENCE", "LIGHT_RERANKER_EARLY_STOPPING_THRESHOLD", "LIGHT_RERANKER_GRADIENT_ACCUMULATION_STEPS"
+]
 
+# ============================================================================
+# ENVIRONMENT VARIABLE UTILITIES
+# ============================================================================
 
 def get_env_var(key: str, default: str = None) -> Optional[str]:
-    """Get environment variable with fallback to default"""
-    value = os.getenv(key, default)
-    if value is None and default is None:
-        logging.warning(f"Environment variable {key} not set and no default provided")
-    return value
-
+    """Get environment variable with a fallback default."""
+    return os.getenv(key, default)
 
 def get_env_bool(key: str, default: bool = False) -> bool:
-    """Get boolean environment variable with validation"""
-    value = os.getenv(key, str(default)).lower()
-    valid_true_values = ("true", "1", "yes", "on")
-    valid_false_values = ("false", "0", "no", "off")
+    """Get boolean environment variable with validation."""
+    value = str(os.getenv(key, str(default))).lower()
+    return value in ("true", "1", "yes", "on")
 
-    if value in valid_true_values:
-        return True
-    elif value in valid_false_values:
-        return False
-    else:
-        logging.warning(
-            f"Invalid boolean value '{value}' for {key}, using default: {default}"
-        )
-        return default
-
-
-def get_env_int(
-    key: str, default: int = 0, min_value: int = None, max_value: int = None
-) -> int:
-    """Get integer environment variable with validation"""
+def get_env_int(key: str, default: int = 0) -> int:
+    """Get integer environment variable."""
     try:
-        value = int(os.getenv(key, str(default)))
-
-        # Validate range if specified
-        if min_value is not None and value < min_value:
-            logging.warning(
-                f"Value {value} for {key} is below minimum {min_value}, using {min_value}"
-            )
-            value = min_value
-        if max_value is not None and value > max_value:
-            logging.warning(
-                f"Value {value} for {key} is above maximum {max_value}, using {max_value}"
-            )
-            value = max_value
-
-        return value
-    except ValueError:
-        logging.error(f"Invalid integer value for {key}, using default: {default}")
+        return int(os.getenv(key, str(default)))
+    except (ValueError, TypeError):
         return default
 
-
-def get_env_float(
-    key: str, default: float = 0.0, min_value: float = None, max_value: float = None
-) -> float:
-    """Get float environment variable with validation"""
+def get_env_float(key: str, default: float = 0.0) -> float:
+    """Get float environment variable."""
     try:
-        value = float(os.getenv(key, str(default)))
-
-        # Validate range if specified
-        if min_value is not None and value < min_value:
-            logging.warning(
-                f"Value {value} for {key} is below minimum {min_value}, using {min_value}"
-            )
-            value = min_value
-        if max_value is not None and value > max_value:
-            logging.warning(
-                f"Value {value} for {key} is above maximum {max_value}, using {max_value}"
-            )
-            value = max_value
-
-        return value
-    except ValueError:
-        logging.error(f"Invalid float value for {key}, using default: {default}")
+        return float(os.getenv(key, str(default)))
+    except (ValueError, TypeError):
         return default
-
 
 # ============================================================================
-# BASE CONFIGURATION WITH ENHANCED VALIDATION
+# CORE PATHS & ENVIRONMENT
 # ============================================================================
 
-# Thu muc goc cua du an
 ROOT_DIR = Path(__file__).parent
-
-# Environment
 ENVIRONMENT = get_env_var("LAWBOT_ENV", "development")
 DEBUG = get_env_bool("LAWBOT_DEBUG", True)
 
-# ============================================================================
-# DIRECTORY CONFIGURATION
-# ============================================================================
+# --- Core Directories ---
+DATA_DIR = ROOT_DIR / "data"
+MODELS_DIR = ROOT_DIR / "models"
+INDEXES_DIR = ROOT_DIR / "indexes"
+REPORTS_DIR = ROOT_DIR / "reports"
+LOGS_DIR = ROOT_DIR / "logs"
 
-# --- Thu muc chinh ---
-DATA_DIR = Path(get_env_var("LAWBOT_DATA_DIR", str(ROOT_DIR / "data")))
-MODELS_DIR = Path(get_env_var("LAWBOT_MODELS_DIR", str(ROOT_DIR / "models")))
-INDEXES_DIR = Path(get_env_var("LAWBOT_INDEXES_DIR", str(ROOT_DIR / "indexes")))
-REPORTS_DIR = Path(get_env_var("LAWBOT_REPORTS_DIR", str(ROOT_DIR / "reports")))
-LOGS_DIR = Path(get_env_var("LAWBOT_LOGS_DIR", str(ROOT_DIR / "logs")))
-
-# --- Duong dan Du lieu ---
+# --- Data Subdirectories ---
 DATA_RAW_DIR = DATA_DIR / "raw"
 DATA_PROCESSED_DIR = DATA_DIR / "processed"
 DATA_VALIDATION_DIR = DATA_DIR / "validation"
 
-# Input files
-LEGAL_CORPUS_PATH = Path(
-    get_env_var("LAWBOT_LEGAL_CORPUS_PATH", str(DATA_RAW_DIR / "legal_corpus.json"))
-)
-TRAIN_JSON_PATH = Path(
-    get_env_var("LAWBOT_TRAIN_JSON_PATH", str(DATA_RAW_DIR / "train.json"))
-)
-PUBLIC_TEST_JSON_PATH = Path(
-    get_env_var("LAWBOT_PUBLIC_TEST_PATH", str(DATA_RAW_DIR / "public_test.json"))
-)
-
-# Enhanced data collection files
-TRAIN_EXTENDED_PATH = Path(
-    get_env_var("LAWBOT_TRAIN_EXTENDED_PATH", str(DATA_RAW_DIR / "train_extended.json"))
-)
-TRAIN_ENHANCED_AUGMENTED_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_ENHANCED_AUGMENTED_PATH",
-        str(DATA_RAW_DIR / "train_enhanced_augmented.json"),
-    )
-)
-TRAIN_EXTENDED_ENHANCED_AUGMENTED_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_EXTENDED_ENHANCED_AUGMENTED_PATH",
-        str(DATA_RAW_DIR / "train_extended_enhanced_augmented.json"),
-    )
-)
-
-# Du lieu duoc chia de huan luyen va danh gia cuoi cung
-TRAIN_SPLIT_JSON_PATH = Path(
-    get_env_var("LAWBOT_TRAIN_SPLIT_PATH", str(DATA_RAW_DIR / "train_split.json"))
-)
-VAL_SPLIT_JSON_PATH = Path(
-    get_env_var("LAWBOT_VAL_SPLIT_PATH", str(DATA_RAW_DIR / "validation_split.json"))
-)
-
-# Processed files
-AID_MAP_PATH = Path(
-    get_env_var("LAWBOT_AID_MAP_PATH", str(DATA_PROCESSED_DIR / "aid_map.pkl"))
-)
-DOC_ID_TO_AIDS_PATH = Path(
-    get_env_var(
-        "LAWBOT_DOC_ID_TO_AIDS_PATH",
-        str(DATA_PROCESSED_DIR / "doc_id_to_aids_complete.json"),
-    )
-)
-
-# Du lieu triplets "easy" duoc tao tu train_split.json
-TRAIN_TRIPLETS_EASY_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_TRIPLETS_EASY_PATH",
-        str(DATA_PROCESSED_DIR / "train_triplets_easy.jsonl"),
-    )
-)
-# Phan training cua du lieu "easy"
-TRAIN_TRIPLETS_EASY_FOR_TRAINING_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_TRIPLETS_EASY_FOR_TRAINING_PATH",
-        str(DATA_PROCESSED_DIR / "train_triplets_easy_for_training.jsonl"),
-    )
-)
-# Du lieu validation cho Bi-Encoder (tach tu tap easy)
-BI_ENCODER_VALIDATION_PATH = Path(
-    get_env_var(
-        "LAWBOT_BI_ENCODER_VALIDATION_PATH",
-        str(DATA_PROCESSED_DIR / "bi_encoder_validation.jsonl"),
-    )
-)
-# Du lieu triplets "hard" negatives
-TRAIN_TRIPLETS_HARD_NEG_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_TRIPLETS_HARD_NEG_PATH",
-        str(DATA_PROCESSED_DIR / "train_triplets_hard_neg.jsonl"),
-    )
-)
-# Du lieu training cuoi cung cho Bi-Encoder (tron easy va hard)
-BI_ENCODER_TRAIN_MIXED_PATH = Path(
-    get_env_var(
-        "LAWBOT_BI_ENCODER_TRAIN_MIXED_PATH",
-        str(DATA_PROCESSED_DIR / "bi_encoder_train_mixed.jsonl"),
-    )
-)
-# Du lieu training sau khi augmentation
-BI_ENCODER_TRAIN_AUGMENTED_PATH = Path(
-    get_env_var(
-        "LAWBOT_BI_ENCODER_TRAIN_AUGMENTED_PATH",
-        str(DATA_PROCESSED_DIR / "bi_encoder_train_augmented.jsonl"),
-    )
-)
-
-TRAIN_PAIRS_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_PAIRS_PATH", str(DATA_PROCESSED_DIR / "train_pairs.jsonl")
-    )
-)  # Easy Negatives
-TRAIN_PAIRS_HARD_NEG_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_PAIRS_HARD_NEG_PATH",
-        str(DATA_PROCESSED_DIR / "train_pairs_hard_neg.jsonl"),
-    )
-)  # Hard Negatives
-TRAIN_PAIRS_MIXED_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_PAIRS_MIXED_PATH",
-        str(DATA_PROCESSED_DIR / "train_pairs_mixed.jsonl"),
-    )
-)  # Du lieu training cho Cross-Encoder (tron easy va hard)
-TRAIN_PAIRS_AUGMENTED_PATH = Path(
-    get_env_var(
-        "LAWBOT_TRAIN_PAIRS_AUGMENTED_PATH",
-        str(DATA_PROCESSED_DIR / "train_pairs_augmented.jsonl"),
-    )
-)  # Du lieu training cho Cross-Encoder (sau augmentation)
-
-# --- Duong dan Mo hinh & Index ---
-BI_ENCODER_PATH = Path(
-    get_env_var("LAWBOT_BI_ENCODER_PATH", str(MODELS_DIR / "bi-encoder"))
-)
-CROSS_ENCODER_PATH = Path(
-    get_env_var("LAWBOT_CROSS_ENCODER_PATH", str(MODELS_DIR / "cross-encoder"))
-)
-FAISS_INDEX_PATH = Path(
-    get_env_var("LAWBOT_FAISS_INDEX_PATH", str(INDEXES_DIR / "legal.faiss"))
-)
-INDEX_TO_AID_PATH = Path(
-    get_env_var("LAWBOT_INDEX_TO_AID_PATH", str(INDEXES_DIR / "index_to_aid.json"))
-)
-
-# --- Ten Model tren Hugging Face ---
-BI_ENCODER_MODEL_NAME = get_env_var(
-    "LAWBOT_BI_ENCODER_MODEL_NAME", "bkai-foundation-models/vietnamese-bi-encoder"
-)
-CROSS_ENCODER_MODEL_NAME = get_env_var(
-    "LAWBOT_CROSS_ENCODER_MODEL_NAME", "vinai/phobert-large"
-)
-
-# --- PhoBERT-Law Model Path (after DAPT) ---
-PHOBERT_LAW_PATH = Path(
-    get_env_var("LAWBOT_PHOBERT_LAW_PATH", str(MODELS_DIR / "phobert-law"))
-)
-
-# --- Light Reranker Model Path (for Cascaded Reranking) ---
-LIGHT_RERANKER_PATH = Path(
-    get_env_var("LAWBOT_LIGHT_RERANKER_PATH", str(MODELS_DIR / "light-reranker"))
-)
-LIGHT_RERANKER_MODEL_NAME = get_env_var(
-    "LAWBOT_LIGHT_RERANKER_MODEL_NAME", "vinai/phobert-base-v2"
-)
-
 # ============================================================================
-# COMMON HYPERPARAMETERS (NOT PERFORMANCE MODE DEPENDENT)
+# KEY FILE PATHS
 # ============================================================================
 
-# Text processing parameters
-MIN_TEXT_LENGTH = get_env_int("LAWBOT_MIN_TEXT_LENGTH", 20, min_value=5, max_value=100)
-MAX_TEXT_LENGTH = get_env_int(
-    "LAWBOT_MAX_TEXT_LENGTH", 1000, min_value=100, max_value=5000
-)
-DAPT_MAX_LENGTH = get_env_int(
-    "LAWBOT_DAPT_MAX_LENGTH", 128, min_value=32, max_value=512
-)
-DAPT_DATASET_SIZE_LIMIT = get_env_int(
-    "LAWBOT_DAPT_DATASET_SIZE_LIMIT", 10000, min_value=1000, max_value=100000
-)
+# --- Raw Data ---
+LEGAL_CORPUS_PATH = DATA_RAW_DIR / "legal_corpus.json"
+TRAIN_JSON_PATH = DATA_RAW_DIR / "train.json"
+PUBLIC_TEST_JSON_PATH = DATA_RAW_DIR / "public_test.json"
 
-# Data filtering parameters
-EMPTY_CONTENT_THRESHOLD = get_env_float(
-    "LAWBOT_EMPTY_CONTENT_THRESHOLD", 0.1, min_value=0.0, max_value=0.5
-)
-MIN_VALID_ARTICLES = get_env_int(
-    "LAWBOT_MIN_VALID_ARTICLES", 1000, min_value=100, max_value=100000
-)
+# --- Processed Data ---
+TRAIN_SPLIT_JSON_PATH = DATA_PROCESSED_DIR / "train_split.json"
+VAL_SPLIT_JSON_PATH = DATA_PROCESSED_DIR / "validation_split.json"
+AID_MAP_PATH = DATA_PROCESSED_DIR / "aid_map.pkl"
+BI_ENCODER_TRAIN_MIXED_PATH = DATA_PROCESSED_DIR / "bi_encoder_train_mixed.jsonl"
+CROSS_ENCODER_TRAIN_PATH = DATA_PROCESSED_DIR / "cross_encoder_train.jsonl"
 
-# Error handling parameters
-MAX_RETRIES = get_env_int("LAWBOT_MAX_RETRIES", 3, min_value=1, max_value=10)
-RETRY_DELAY_SECONDS = get_env_int(
-    "LAWBOT_RETRY_DELAY_SECONDS", 30, min_value=5, max_value=300
-)
-TIMEOUT_SECONDS = get_env_int(
-    "LAWBOT_TIMEOUT_SECONDS", 300, min_value=60, max_value=3600
-)
+# ============================================================================
+# MODEL & INDEX PATHS
+# ============================================================================
 
-# GPU/CPU fallback parameters
+# --- Final Model Paths (after supervised training) ---
+BI_ENCODER_PATH = MODELS_DIR / "bi-encoder"
+CROSS_ENCODER_PATH = MODELS_DIR / "cross-encoder"
+LIGHT_RERANKER_PATH = MODELS_DIR / "light-reranker"
+PHOBERT_LAW_PATH = MODELS_DIR / "phobert-law"
+
+# --- Unsupervised Adaptation Model Paths ---
+DAPT_ADAPTED_MODEL_PATH = MODELS_DIR / "dapt_base_model"
+TSDAE_ADAPTED_MODEL_PATH = MODELS_DIR / "tsdae_adapted_model"
+
+# --- Index Paths ---
+FAISS_INDEX_PATH = INDEXES_DIR / "legal.faiss"
+INDEX_TO_AID_PATH = INDEXES_DIR / "index_to_aid.json"
+
+# ============================================================================
+# BASE MODEL NAMES (from HuggingFace)
+# ============================================================================
+
+BI_ENCODER_MODEL_NAME = get_env_var("LAWBOT_BI_ENCODER_MODEL_NAME", "bkai-foundation-models/vietnamese-bi-encoder")
+CROSS_ENCODER_MODEL_NAME = get_env_var("LAWBOT_CROSS_ENCODER_MODEL_NAME", "vinai/phobert-base-v2")
+LIGHT_RERANKER_MODEL_NAME = get_env_var("LAWBOT_LIGHT_RERANKER_MODEL_NAME", "vinai/phobert-base-v2")
+
+# ============================================================================
+# DOMAIN ADAPTATION & SYSTEM CONFIG
+# ============================================================================
+
+# --- Unsupervised Domain Adaptation ---
+DAPT_MAX_LENGTH = get_env_int("LAWBOT_DAPT_MAX_LENGTH", 128)
+DAPT_DATASET_SIZE_LIMIT = get_env_int("LAWBOT_DAPT_DATASET_SIZE_LIMIT", 10000)
+TSDAE_EPOCHS = get_env_int("LAWBOT_TSDAE_EPOCHS", 1)
+TSDAE_BATCH_SIZE = get_env_int("LAWBOT_TSDAE_BATCH_SIZE", 8)
+
+# --- System & Error Handling ---
+MAX_RETRIES = get_env_int("LAWBOT_MAX_RETRIES", 3)
+RETRY_DELAY_SECONDS = get_env_int("LAWBOT_RETRY_DELAY_SECONDS", 30)
 FORCE_CPU_MODE = get_env_bool("LAWBOT_FORCE_CPU_MODE", False)
-GPU_MEMORY_THRESHOLD_GB = get_env_float(
-    "LAWBOT_GPU_MEMORY_THRESHOLD_GB", 4.0, min_value=1.0, max_value=32.0
-)
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# DATALOADER CONFIG
+# ============================================================================
+BI_ENCODER_DATALOADER_NUM_WORKERS = get_env_int("LAWBOT_BI_ENCODER_DATALOADER_NUM_WORKERS", 0)
+BI_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool("LAWBOT_BI_ENCODER_DATALOADER_PIN_MEMORY", True)
+BI_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int("LAWBOT_BI_ENCODER_DATALOADER_PREFETCH_FACTOR", 2)
+
+CROSS_ENCODER_DATALOADER_NUM_WORKERS = get_env_int("LAWBOT_CROSS_ENCODER_DATALOADER_NUM_WORKERS", 0)
+CROSS_ENCODER_DATALOADER_PIN_MEMORY = get_env_bool("LAWBOT_CROSS_ENCODER_DATALOADER_PIN_MEMORY", True)
+CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR = get_env_int("LAWBOT_CROSS_ENCODER_DATALOADER_PREFETCH_FACTOR", 2)
+
+LIGHT_RERANKER_DATALOADER_NUM_WORKERS = get_env_int("LAWBOT_LIGHT_RERANKER_DATALOADER_NUM_WORKERS", 0)
+
+# ============================================================================
+# TRAINING HYPERPARAMETERS (BASE)
 # ============================================================================
 
-def validate_config() -> bool:
-    """Validate configuration settings with enhanced error handling"""
-    errors = []
-    warnings = []
+# --- Bi-Encoder ---
+BI_ENCODER_LR = get_env_float("LAWBOT_BI_ENCODER_LR", 2e-5)
+BI_ENCODER_WARMUP_RATIO = get_env_float("LAWBOT_BI_ENCODER_WARMUP_RATIO", 0.1)
+BI_ENCODER_EVAL_STEPS = get_env_int("LAWBOT_BI_ENCODER_EVAL_STEPS", 250)
+BI_ENCODER_EARLY_STOPPING_PATIENCE = get_env_int("LAWBOT_BI_ENCODER_EARLY_STOPPING_PATIENCE", 3)
+BI_ENCODER_EARLY_STOPPING_THRESHOLD = get_env_float("LAWBOT_BI_ENCODER_EARLY_STOPPING_THRESHOLD", 0.005)
+BI_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int("LAWBOT_BI_ENCODER_GRADIENT_ACCUMULATION_STEPS", 1)
 
-    # Check required directories
-    required_dirs = [DATA_DIR, MODELS_DIR, INDEXES_DIR, REPORTS_DIR, LOGS_DIR]
-    for dir_path in required_dirs:
-        if not dir_path.exists():
-            try:
-                dir_path.mkdir(parents=True, exist_ok=True)
-                warnings.append(f"Created missing directory: {dir_path}")
-            except Exception as e:
-                errors.append(f"Cannot create directory {dir_path}: {e}")
+# --- Cross-Encoder ---
+CROSS_ENCODER_LR = get_env_float("LAWBOT_CROSS_ENCODER_LR", 2e-5)
+CROSS_ENCODER_WARMUP_RATIO = get_env_float("LAWBOT_CROSS_ENCODER_WARMUP_RATIO", 0.1)
+CROSS_ENCODER_EVAL_STEPS = get_env_int("LAWBOT_CROSS_ENCODER_EVAL_STEPS", 500)
+CROSS_ENCODER_EARLY_STOPPING_PATIENCE = get_env_int("LAWBOT_CROSS_ENCODER_EARLY_STOPPING_PATIENCE", 3)
+CROSS_ENCODER_EARLY_STOPPING_THRESHOLD = get_env_float("LAWBOT_CROSS_ENCODER_EARLY_STOPPING_THRESHOLD", 0.005)
+CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS = get_env_int("LAWBOT_CROSS_ENCODER_GRADIENT_ACCUMULATION_STEPS", 2)
 
-    # Check required files
-    required_files = [LEGAL_CORPUS_PATH, TRAIN_JSON_PATH]
-    for file_path in required_files:
-        if not file_path.exists():
-            errors.append(f"Required file not found: {file_path}")
-
-    # Print warnings
-    if warnings:
-        print("Configuration Warnings:")
-        for warning in warnings:
-            print(f"  ⚠️  {warning}")
-
-    # Raise errors if any
-    if errors:
-        error_msg = "Configuration validation failed:\n" + "\n".join(errors)
-        raise ValueError(error_msg)
-
-    return True
-
-
-def print_config_summary() -> None:
-    """Print comprehensive configuration summary"""
-    print("=" * 80)
-    print("LAWBOT BASE CONFIGURATION SUMMARY")
-    print("=" * 80)
-    print(f"Environment: {ENVIRONMENT}")
-    print(f"Debug Mode: {DEBUG}")
-    print()
-    print("Directories:")
-    print(f"  Data: {DATA_DIR}")
-    print(f"  Models: {MODELS_DIR}")
-    print(f"  Indexes: {INDEXES_DIR}")
-    print(f"  Reports: {REPORTS_DIR}")
-    print(f"  Logs: {LOGS_DIR}")
-    print("=" * 80)
-
-
-def get_config_dict() -> Dict[str, Any]:
-    """Get configuration as dictionary for logging/serialization"""
-    return {
-        "environment": ENVIRONMENT,
-        "debug": DEBUG,
-        "directories": {
-            "data": str(DATA_DIR),
-            "models": str(MODELS_DIR),
-            "indexes": str(INDEXES_DIR),
-            "reports": str(REPORTS_DIR),
-            "logs": str(LOGS_DIR),
-        },
-    }
+# --- Light Reranker ---
+LIGHT_RERANKER_LR = get_env_float("LAWBOT_LIGHT_RERANKER_LR", 3e-5)
+LIGHT_RERANKER_WARMUP_RATIO = get_env_float("LAWBOT_LIGHT_RERANKER_WARMUP_RATIO", 0.1)
+LIGHT_RERANKER_EVAL_STEPS = get_env_int("LAWBOT_LIGHT_RERANKER_EVAL_STEPS", 250)
+LIGHT_RERANKER_EARLY_STOPPING_PATIENCE = get_env_int("LAWBOT_LIGHT_RERANKER_EARLY_STOPPING_PATIENCE", 3)
+LIGHT_RERANKER_EARLY_STOPPING_THRESHOLD = get_env_float("LAWBOT_LIGHT_RERANKER_EARLY_STOPPING_THRESHOLD", 0.005)
+LIGHT_RERANKER_GRADIENT_ACCUMULATION_STEPS = get_env_int("LAWBOT_LIGHT_RERANKER_GRADIENT_ACCUMULATION_STEPS", 1)

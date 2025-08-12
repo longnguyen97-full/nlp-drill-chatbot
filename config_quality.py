@@ -101,6 +101,20 @@ RANDOM_NEGATIVE_RATIO = get_env_float("LAWBOT_RANDOM_NEGATIVE_RATIO", 0.5, min_v
 LIGHT_RERANKING_WEIGHT = get_env_float("LAWBOT_LIGHT_RERANKING_WEIGHT", 0.7, min_value=0.0, max_value=1.0)
 RETRIEVAL_SCORE_WEIGHT = get_env_float("LAWBOT_RETRIEVAL_SCORE_WEIGHT", 0.3, min_value=0.0, max_value=1.0)
 
+# ----------------------------------------------------------------------------
+# Evaluation K values (used by step 04 reporter)
+# ----------------------------------------------------------------------------
+def _parse_eval_k_values(default: str) -> list:
+    try:
+        values = [int(x.strip()) for x in default.split(",") if x.strip()]
+        return [v for v in values if v > 0]
+    except Exception:
+        return [1, 3, 5, 10, 20, 50, 100, 200, 500]
+
+EVAL_K_VALUES = _parse_eval_k_values(
+    get_env_var("LAWBOT_EVAL_K_VALUES", "1,3,5,10,20,50,100,200,500")
+)
+
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================

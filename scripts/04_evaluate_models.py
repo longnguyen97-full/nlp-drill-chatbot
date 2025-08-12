@@ -369,7 +369,8 @@ def evaluate_tier1_retrieval(
                 retrieval_scores.append([])
 
         # Calculate metrics
-        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        # Use configurable evaluation K values from config
+        evaluator = BatchEvaluator(k_values=getattr(config, "EVAL_K_VALUES", [1, 3, 5, 10, 20, 50]))
         retrieval_aids_batch = [
             [aid for aid in preds] for preds in retrieval_predictions
         ]
@@ -430,7 +431,7 @@ def evaluate_tier1_retrieval_batch(
     try:
         retrieved_aids_batch, distances_batch = pipeline.retrieve_batch(queries, top_k)
 
-        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        evaluator = BatchEvaluator(k_values=getattr(config, "EVAL_K_VALUES", [1, 3, 5, 10, 20, 50]))
         metrics = evaluator.evaluate_batch(queries, ground_truth_sets, retrieved_aids_batch)
 
         # Convert distances to normalized scores per query
@@ -492,7 +493,7 @@ def evaluate_tier3_reranking(
                 tier3_scores.append([])
 
         # Calculate metrics
-        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        evaluator = BatchEvaluator(k_values=getattr(config, "EVAL_K_VALUES", [1, 3, 5, 10, 20, 50]))
         tier3_aids_batch = [
             [res["aid"] for res in preds] for preds in tier3_predictions
         ]
@@ -568,7 +569,7 @@ def evaluate_tier3_reranking_batch(
                 predictions.append([])
                 scores.append([])
 
-        evaluator = BatchEvaluator(k_values=[1, 3, 5, 10, 20, 50])
+        evaluator = BatchEvaluator(k_values=getattr(config, "EVAL_K_VALUES", [1, 3, 5, 10, 20, 50]))
         aids_batch = [[res["aid"] for res in preds] for preds in predictions]
         metrics = evaluator.evaluate_batch(queries, ground_truth_sets, aids_batch)
 

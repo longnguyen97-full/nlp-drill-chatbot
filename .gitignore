@@ -1,28 +1,35 @@
 # ============================================================================
 # LEGAL QA PIPELINE - GITIGNORE (PRODUCTION READY)
 # ============================================================================
+# Cập nhật: 2024 - Tối ưu hóa cho Legal QA Pipeline
+# Mục tiêu: Đảm bảo hiệu quả, nhất quán và bền bỉ
+
+# ============================================================================
+# PYTHON ENVIRONMENT & DEPENDENCIES
+# ============================================================================
 
 # Virtual Environment
-# Bỏ qua thư mục môi trường ảo để không đưa các thư viện đã cài đặt lên git
 venv/
 .venv/
 env/
 .env
 conda-env/
 pipenv/
+Pipfile.lock
+poetry.lock
 
 # Python cache & compiled files
-# Các file được Python tự động tạo ra
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 *.so
 *.egg
 *.egg-info/
 dist/
 build/
 *.whl
+.eggs/
+.pytest_cache/
 
 # ============================================================================
 # PROJECT ARTIFACTS (LARGE FILES - NOT FOR VERSION CONTROL)
@@ -34,6 +41,10 @@ data.zip
 *.csv
 *.json.gz
 *.pkl.gz
+*.parquet
+*.h5
+*.hdf5
+*.feather
 
 # Các mô hình đã huấn luyện và index - KHÔNG commit models
 models/
@@ -45,11 +56,46 @@ checkpoints/
 *.pth
 *.onnx
 *.faiss
+*.index
+*.model
+*.ckpt
+*.pkl
+
+# Features và processed data - KHÔNG commit processed data
+features/processed_data_*/
+features/*/bi_encoder_train.jsonl
+features/*/cross_encoder_train*.jsonl
+features/*/processed_corpus.json
+features/*/metadata.json
 
 # Các báo cáo đánh giá được tạo ra
 reports/
 logs/
 *.log
+*.log.*
+
+# ============================================================================
+# MACHINE LEARNING SPECIFIC
+# ============================================================================
+
+# MLflow
+mlruns/
+mlflow.db
+
+# TensorBoard
+runs/
+tensorboard_logs/
+
+# Weights & Biases
+wandb/
+
+# Optuna
+optuna_study.db
+optuna_logs/
+
+# Hugging Face
+.cache/
+huggingface/
 
 # ============================================================================
 # DEVELOPMENT & DEBUGGING FILES
@@ -65,12 +111,15 @@ logs/
 *.bak
 *.backup
 *~
+*.swp
+*.swo
 
 # Debug & test files
 debug_*.py
 test_*.py
 *_debug.py
 *_test.py
+*_test_*.py
 
 # ============================================================================
 # IDE & EDITOR FILES
@@ -108,6 +157,8 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 *.lnk
+*.exe
+*.msi
 
 # macOS
 .DS_Store
@@ -122,6 +173,7 @@ Icon?
 *~
 .directory
 .Trash-*
+.nfs*
 
 # ============================================================================
 # SECURITY & SENSITIVE DATA
@@ -135,11 +187,14 @@ secrets.json
 *.crt
 *.p12
 config_local.py
+secrets/
+credentials/
 
 # API keys & tokens
 api_keys.txt
 *.token
 .secrets/
+auth.json
 
 # ============================================================================
 # BUILD & DEPLOYMENT
@@ -149,11 +204,14 @@ api_keys.txt
 .dockerignore
 Dockerfile.local
 docker-compose.override.yml
+.docker/
 
 # CI/CD
 .github/workflows/
 .gitlab-ci.yml
 .travis.yml
+.circleci/
+.gitlab/
 
 # Coverage reports
 htmlcov/
@@ -161,6 +219,7 @@ htmlcov/
 .coverage.*
 coverage.xml
 *.cover
+.pytest_cache/
 
 # ============================================================================
 # DOCUMENTATION BUILD
@@ -175,11 +234,109 @@ docs/_templates/
 site/
 
 # ============================================================================
+# STREAMLIT SPECIFIC
+# ============================================================================
+
+# Streamlit
+.streamlit/
+.streamlit/secrets.toml
+
+# ============================================================================
+# LEGAL DOCUMENT SPECIFIC
+# ============================================================================
+
+# PDF files (legal documents)
+*.pdf
+*.PDF
+
+# Word documents
+*.doc
+*.docx
+
+# Excel files
+*.xls
+*.xlsx
+
+# ============================================================================
+# PERFORMANCE & MONITORING
+# ============================================================================
+
+# Performance profiling
+*.prof
+*.profile
+
+# Memory dumps
+*.dump
+*.dmp
+
+# ============================================================================
+# BACKUP & ARCHIVE FILES
+# ============================================================================
+
+# Archive files
+*.tar
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Backup files
+*.backup
+*.bak
+*.old
+*.orig
+
+# ============================================================================
 # TEMPORARY EXCLUSIONS (CAN BE REMOVED AFTER CLEANUP)
 # ============================================================================
 
-# PDF files (temporary - remove if needed)
-*.pdf
-
 # Specific files to ignore during development
-README.pdf 
+README.pdf
+*.tmp.*
+temp_*
+cache_*
+
+# ============================================================================
+# CUSTOM PROJECT EXCLUSIONS
+# ============================================================================
+
+# Legal QA specific
+legal_corpus/
+case_files/
+judgment_data/
+law_documents/
+
+# Model outputs
+outputs/
+results/
+predictions/
+embeddings/
+
+# Data validation
+validation_reports/
+data_quality_reports/
+
+# ============================================================================
+# GIT MAINTENANCE FILES
+# ============================================================================
+
+# Local gitignore (không commit)
+.gitignore.local
+
+# Git maintenance reports
+git_maintenance_report_*.json
+git_maintenance_report_*.txt
+
+# ============================================================================
+# DEVELOPMENT TOOLS
+# ============================================================================
+
+# IDE workspace files
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# Local development files
+local_*
+dev_*
+test_local_* 

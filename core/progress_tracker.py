@@ -1,241 +1,301 @@
 #!/usr/bin/env python3
 """
-Progress Utilities for Legal QA Pipeline
-======================================
+Progress Tracker - LawBot v8.0
+==============================
 
-Cac utility de hien thi progress bar va thong tin chi tiet
-cho pipeline training va evaluation.
+Progress tracking and logging utilities for monitoring pipeline execution.
 """
 
-import time
 import logging
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+import time
+from typing import Dict, List, Any, Optional
+from datetime import datetime
 
 
 class ProgressTracker:
-    """Theo doi tien do cua pipeline"""
+    """Progress tracker for monitoring pipeline execution steps."""
 
     def __init__(self, total_steps: int):
+        """Initialize the progress tracker.
+
+        Args:
+            total_steps: Total number of steps to track
+        """
         self.total_steps = total_steps
         self.current_step = 0
         self.start_time = time.time()
-        self.step_times = []
+        self.steps_info: List[Dict[str, Any]] = []
         self.logger = logging.getLogger(__name__)
 
-    def start_step(self, step_name: str, step_info: Dict):
-        """Bat dau mot buoc moi"""
+    def start_step(
+        self, step_name: str, step_info: Optional[Dict[str, Any]] = None
+    ) -> float:
+        """Start tracking a new step.
+
+        Args:
+            step_name: Name of the step
+            step_info: Additional information about the step
+
+        Returns:
+            Start time of the step
+        """
         self.current_step += 1
-        step_start = time.time()
+        step_start_time = time.time()
 
-        # Get actual step ID from step_info
-        step_id = step_info.get("id", str(self.current_step))
+        if step_info is None:
+            step_info = {}
 
-        # Log thong tin buoc voi separator ro rang
-        self.logger.info("")
-        self.logger.info("[START]" + "=" * 78 + "[START]")
-        self.logger.info(f"[START] BUOC {step_id}/{self.total_steps}: {step_name}")
-        self.logger.info("[START]" + "=" * 78 + "[START]")
         self.logger.info(
-            f"[NOTE] Mo ta: {step_info.get('description', 'Khong co mo ta')}"
-        )
-        self.logger.info(f"[TOOL] Script: {step_info.get('script', 'Khong xac dinh')}")
-
-        if step_info.get("args"):
-            self.logger.info(f"[CONFIG] Arguments: {' '.join(step_info['args'])}")
-
-        estimated_time = step_info.get("estimated_time", "Khong xac dinh")
-        self.logger.info(f"[TIME] Thoi gian uoc tinh: {estimated_time}")
-
-        status = (
-            "[REQUIRED] Bat buoc"
-            if step_info.get("required", True)
-            else "[OPTIONAL] Tuy chon"
-        )
-        self.logger.info(f"[STATS] Trang thai: {status}")
-
-        # Hien thi progress bar
-        self._show_progress_bar()
-        self.logger.info("[START]" + "=" * 78 + "[START]")
-        self.logger.info("")
-
-        return step_start
-
-    def end_step(self, step_start: float, success: bool = True, step_info: Dict = None):
-        """Ket thuc mot buoc"""
-        elapsed = time.time() - step_start
-        self.step_times.append(elapsed)
-
-        # Get actual step ID from step_info
-        step_id = (
-            step_info.get("id", str(self.current_step))
-            if step_info
-            else str(self.current_step)
+            f"[{self.current_step}/{self.total_steps}] Starting step: {step_name}..."
         )
 
-        # Log ket qua voi separator ro rang
-        self.logger.info("")
-        if success:
-            self.logger.info("[OK]" + "=" * 78 + "[OK]")
-            self.logger.info(
-                f"[OK] BUOC {step_id} HOAN THANH THANH CONG trong {elapsed:.1f}s"
+        step_data = {
+            "name": step_name,
+            "info": step_info,
+            "start_time": step_start_time,
+            "end_time": None,
+            "duration": None,
+            "success": None,
+        }
+
+        self.steps_info.append(step_data)
+        return step_start_time
+
+    def end_step(self, step_start_time: float, success: bool):
+        """End tracking the current step.
+
+        Args:
+            step_start_time: Start time returned by start_step
+            success: Whether the step completed successfully
+        """
+        end_time = time.time()
+        duration = end_time - step_start_time
+
+        if self.steps_info:
+            step_data = self.steps_info[-1]
+            step_data.update(
+                {"end_time": end_time, "duration": duration, "success": success}
             )
-            self.logger.info("[OK]" + "=" * 78 + "[OK]")
-        else:
-            self.logger.info("[FAIL]" + "=" * 78 + "[FAIL]")
-            self.logger.info(f"[FAIL] BUOC {step_id} THAT BAI sau {elapsed:.1f}s")
-            self.logger.info("[FAIL]" + "=" * 78 + "[FAIL]")
-        self.logger.info("")
 
-        # Hien thi thong ke
-        self._show_statistics()
+            status = "completed successfully" if success else "failed"
+            self.logger.info(f"Step {step_data['name']} {status} in {duration:.2f}s.")
 
-    def _show_progress_bar(self):
-        """Hien thi progress bar"""
-        progress = self.current_step / self.total_steps
-        bar_length = 50
-        filled_length = int(bar_length * progress)
+    def get_progress(self) -> Dict[str, Any]:
+        """Get current progress information.
 
-        bar = "█" * filled_length + "░" * (bar_length - filled_length)
-        percentage = progress * 100
-
-        self.logger.info(
-            f"[PROGRESS] TIEN DO: [{bar}] {percentage:.1f}% ({self.current_step}/{self.total_steps})"
+        Returns:
+            Dictionary containing progress information
+        """
+        completed_steps = sum(
+            1 for step in self.steps_info if step.get("success") is not None
+        )
+        failed_steps = sum(
+            1 for step in self.steps_info if step.get("success") is False
         )
 
-    def _show_statistics(self):
-        """Hien thi thong ke"""
-        if self.step_times:
-            avg_time = sum(self.step_times) / len(self.step_times)
-            total_elapsed = time.time() - self.start_time
-            remaining_steps = self.total_steps - self.current_step
+        total_time = time.time() - self.start_time
 
-            if remaining_steps > 0:
-                estimated_remaining = avg_time * remaining_steps
-                eta = datetime.now() + timedelta(seconds=estimated_remaining)
+        return {
+            "current_step": self.current_step,
+            "total_steps": self.total_steps,
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+            "total_time": total_time,
+            "progress_percentage": (
+                (completed_steps / self.total_steps * 100)
+                if self.total_steps > 0
+                else 0
+            ),
+        }
 
-                self.logger.info("[STATS] THONG KE:")
-                self.logger.info(
-                    f"   [TIME] Thoi gian trung binh/buoc: {avg_time:.1f}s"
-                )
-                self.logger.info(
-                    f"   [TIME] Tong thoi gian da chay: {total_elapsed/60:.1f} phut"
-                )
-                self.logger.info(
-                    f"   [TIME] Thoi gian uoc tinh con lai: {estimated_remaining/60:.1f} phut"
-                )
-                self.logger.info(
-                    f"   [TARGET] Du kien hoan thanh: {eta.strftime('%H:%M:%S')}"
-                )
-                self.logger.info("")
+    def get_summary(self) -> str:
+        """Get a summary report of all steps.
+
+        Returns:
+            Formatted summary report string
+        """
+        total_time = time.time() - self.start_time
+        return create_summary_report(self.steps_info, total_time)
 
 
 class StepLogger:
-    """Logger chuyen dung cho tung buoc"""
+    """Logger for individual pipeline steps."""
 
-    def __init__(self, step_name: str):
-        # step_name should be an id like "03"; create concise logger name
-        self.step_name = step_name
-        self.logger = logging.getLogger(f"step.{step_name}")
-        self.start_time = time.time()
+    def __init__(self, step_id: str):
+        """Initialize the step logger.
+
+        Args:
+            step_id: Unique identifier for the step
+        """
+        self.step_id = step_id
+        self.logger = logging.getLogger(f"StepLogger_{step_id}")
 
     def info(self, message: str):
-        """Log thong tin"""
-        self.logger.info(f"[STEP {self.step_name}] {message}")
+        """Log an info message."""
+        self.logger.info(f"[STEP {self.step_id}] {message}")
+
+    def error(self, message: str):
+        """Log an error message."""
+        self.logger.error(f"[STEP {self.step_id}] {message}")
 
     def warning(self, message: str):
-        """Log canh bao"""
-        self.logger.warning(f"[STEP {self.step_name}] [WARN] {message}")
+        """Log a warning message."""
+        self.logger.warning(f"[STEP {self.step_id}] {message}")
 
-    def error(self, message: str, exc_info: bool = False):
-        """Logs an error message, optionally including exception info."""
-        log_message = f"[{self.step_name}] [FAIL] {message}"
-        self.logger.error(log_message, exc_info=exc_info)
+    def debug(self, message: str):
+        """Log a debug message."""
+        self.logger.debug(f"[STEP {self.step_id}] {message}")
 
-    def success(self, message: str):
-        """Log thanh cong"""
-        self.logger.info(f"[STEP {self.step_name}] [OK] {message}")
+    def func_start(self, func_name: str):
+        """Log the start of a function execution."""
+        self.logger.info(f"[FUNC START] >> {func_name}")
 
-    def step_complete(self, additional_info: str = ""):
-        """Log hoan thanh buoc"""
-        elapsed = time.time() - self.start_time
-        self.logger.info(
-            f"[STEP {self.step_name}] [OK] Hoan thanh trong {elapsed:.1f}s {additional_info}"
-        )
-
-    def step_start(self, message: str):
-        """Log bat dau buoc"""
-        self.logger.info(f"[STEP {self.step_name}] [START] {message}")
-
-    def func_start(self, func_name: str, detail: str = ""):
-        """Log bat dau mot ham con trong buoc"""
-        suffix = f" - {detail}" if detail else ""
-        self.logger.info(f"[STEP {self.step_name}] [FUNC] ▶ {func_name}{suffix}")
-
-    def func_end(self, func_name: str, ok: bool = True, detail: str = ""):
-        """Log ket thuc mot ham con trong buoc"""
-        status = "OK" if ok else "FAIL"
-        suffix = f" - {detail}" if detail else ""
-        self.logger.info(f"[STEP {self.step_name}] [FUNC] ◀ {func_name} [{status}]{suffix}")
+    def func_end(self, func_name: str):
+        """Log the end of a function execution."""
+        self.logger.info(f"[FUNC END] << {func_name}")
 
     def step_progress(self, message: str):
-        """Log tien do trong buoc"""
-        self.logger.info(f"[STEP {self.step_name}] [OUT] {message}")
+        """Log step progress information."""
+        self.logger.info(f"[PROGRESS] {message}")
 
 
-def format_time(seconds: float) -> str:
-    """Format thoi gian thanh string de doc"""
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    elif seconds < 3600:
-        minutes = seconds / 60
-        return f"{minutes:.1f} phut"
-    else:
-        hours = seconds / 3600
-        return f"{hours:.1f} gio"
+def create_summary_report(steps_info: List[Dict[str, Any]], total_time: float) -> str:
+    """Create a formatted summary report.
+
+    Args:
+        steps_info: List of step information dictionaries
+        total_time: Total execution time
+
+    Returns:
+        Formatted summary report string
+    """
+    report = "\n" + "=" * 50 + "\n"
+    report += "PIPELINE EXECUTION SUMMARY\n"
+    report += "=" * 50 + "\n"
+
+    for i, step in enumerate(steps_info, 1):
+        status = (
+            "✅ SUCCESS"
+            if step.get("success")
+            else "❌ FAILED" if step.get("success") is False else "⏳ RUNNING"
+        )
+        duration_str = (
+            f"{step.get('duration', 0):.2f}s" if step.get("duration") else "N/A"
+        )
+        report += f"{i}. {step['name']:<40} {status:<10} ({duration_str})\n"
+
+    report += "-" * 50 + "\n"
+    report += f"Total Execution Time: {total_time:.2f}s\n"
+    report += "=" * 50 + "\n"
+
+    return report
 
 
-def format_file_size(bytes_size: int) -> str:
-    """Format kich thuoc file thanh string de doc"""
-    for unit in ["B", "KB", "MB", "GB"]:
-        if bytes_size < 1024.0:
-            return f"{bytes_size:.1f} {unit}"
-        bytes_size /= 1024.0
-    return f"{bytes_size:.1f} TB"
+class PipelineMonitor:
+    """Advanced pipeline monitoring with real-time updates."""
 
+    def __init__(self, pipeline_name: str):
+        """Initialize the pipeline monitor.
 
-def create_summary_report(steps_info: List[Dict], total_time: float) -> str:
-    """Tao bao cao tong ket"""
-    report = []
-    report.append("=" * 80)
-    report.append("[CHART] BAO CAO TONG KET PIPELINE")
-    report.append("=" * 80)
+        Args:
+            pipeline_name: Name of the pipeline being monitored
+        """
+        self.pipeline_name = pipeline_name
+        self.start_time = time.time()
+        self.steps = []
+        self.logger = logging.getLogger(f"PipelineMonitor_{pipeline_name}")
 
-    successful_steps = 0
-    failed_steps = 0
+    def add_step(self, step_name: str, step_type: str = "default") -> str:
+        """Add a new step to monitor.
 
-    for step in steps_info:
-        status = "[OK]" if step.get("success", False) else "[FAIL]"
-        name = step.get("name", "Unknown")
-        time_taken = step.get("time", 0)
+        Args:
+            step_name: Name of the step
+            step_type: Type of the step
 
-        if step.get("success", False):
-            successful_steps += 1
-        else:
-            failed_steps += 1
+        Returns:
+            Step ID for tracking
+        """
+        step_id = f"{step_name}_{len(self.steps)}"
+        step_data = {
+            "id": step_id,
+            "name": step_name,
+            "type": step_type,
+            "start_time": None,
+            "end_time": None,
+            "duration": None,
+            "status": "pending",
+            "error": None,
+        }
+        self.steps.append(step_data)
+        self.logger.info(f"Added step: {step_name} (ID: {step_id})")
+        return step_id
 
-        report.append(f"{status} {name} ({format_time(time_taken)})")
+    def start_step(self, step_id: str):
+        """Mark a step as started.
 
-    report.append("")
-    report.append(f"[CHART] Thong ke:")
-    report.append(f"   [OK] Thanh cong: {successful_steps}")
-    report.append(f"   [FAIL] That bai: {failed_steps}")
-    report.append(f"   [TIME] Tong thoi gian: {format_time(total_time)}")
+        Args:
+            step_id: ID of the step to start
+        """
+        for step in self.steps:
+            if step["id"] == step_id:
+                step["start_time"] = time.time()
+                step["status"] = "running"
+                self.logger.info(f"Started step: {step['name']}")
+                break
 
-    if successful_steps > 0:
-        success_rate = (successful_steps / len(steps_info)) * 100
-        report.append(f"   [CHART] Ty le thanh cong: {success_rate:.1f}%")
+    def complete_step(
+        self, step_id: str, success: bool = True, error: Optional[str] = None
+    ):
+        """Mark a step as completed.
 
-    report.append("=" * 80)
+        Args:
+            step_id: ID of the step to complete
+            success: Whether the step completed successfully
+            error: Error message if the step failed
+        """
+        for step in self.steps:
+            if step["id"] == step_id:
+                step["end_time"] = time.time()
+                step["duration"] = (
+                    step["end_time"] - step["start_time"]
+                    if step["start_time"]
+                    else None
+                )
+                step["status"] = "completed" if success else "failed"
+                step["error"] = error
 
-    return "\n".join(report)
+                status_msg = "completed successfully" if success else f"failed: {error}"
+                self.logger.info(
+                    f"Step {step['name']} {status_msg} in {step['duration']:.2f}s"
+                )
+                break
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get current pipeline status.
+
+        Returns:
+            Dictionary containing pipeline status information
+        """
+        total_steps = len(self.steps)
+        completed_steps = sum(1 for step in self.steps if step["status"] == "completed")
+        failed_steps = sum(1 for step in self.steps if step["status"] == "failed")
+        running_steps = sum(1 for step in self.steps if step["status"] == "running")
+
+        total_time = time.time() - self.start_time
+
+        return {
+            "pipeline_name": self.pipeline_name,
+            "total_steps": total_steps,
+            "completed_steps": completed_steps,
+            "failed_steps": failed_steps,
+            "running_steps": running_steps,
+            "pending_steps": total_steps
+            - completed_steps
+            - failed_steps
+            - running_steps,
+            "total_time": total_time,
+            "progress_percentage": (
+                (completed_steps / total_steps * 100) if total_steps > 0 else 0
+            ),
+            "steps": self.steps,
+        }

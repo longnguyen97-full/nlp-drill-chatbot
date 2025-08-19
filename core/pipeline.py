@@ -205,6 +205,7 @@ class LegalQAPipeline:
         self,
         query: str,
         top_k_retrieval: Optional[int] = None,
+        top_k_light: Optional[int] = None,  # ✅ Add top_k_light parameter
         top_k_final: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
@@ -219,7 +220,8 @@ class LegalQAPipeline:
         top_k_final = top_k_final or cfg_app.top_k_final
 
         use_light_ranking = cfg_reranker.light_reranker.get("enabled", False)
-        top_k_light = cfg_reranker.light_reranker.get("top_k", 80)
+        # ✅ Use top_k_light from params if provided, otherwise from config
+        top_k_light = top_k_light or cfg_reranker.light_reranker.get("top_k", 80)
         light_weight = cfg_reranker.light_reranker.get("weight", 0.7)
 
         use_cross_encoder = cfg_reranker.cross_encoder.get("enabled", False)
@@ -244,6 +246,9 @@ class LegalQAPipeline:
             logger.info(
                 f"Tiers: Ret({top_k_retrieval}) -> Light({top_k_light}) -> Cross -> Final({top_k_final})"
             )
+            logger.info(
+                f"🔧 Parameters: retrieval={top_k_retrieval}, light={top_k_light}, final={top_k_final}"
+            )
 
             # Tier 1: Bi-Encoder Retrieval
             logger.info("🎯 Tier 1: Bi-Encoder Retrieval")
@@ -257,9 +262,9 @@ class LegalQAPipeline:
                 doc["light_reranker_score"] = 0.0
                 doc["cross_encoder_score"] = 0.0
                 # Debug logging
-                logger.info(
-                    f"🔍 Document initialized with scores: light={doc['light_reranker_score']}, cross={doc['cross_encoder_score']}"
-                )
+                # logger.info(
+                #     f"🔍 Document initialized with scores: light={doc['light_reranker_score']}, cross={doc['cross_encoder_score']}"
+                # )
 
             # Tier 2: Light Reranking (if enabled)
             if use_light_ranking and self.reranker and self.reranker.is_ready:

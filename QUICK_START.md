@@ -1,4 +1,4 @@
-# LawBot v8.3 - Quick Start Guide (Contrastive Learning Enhanced)
+# LawBot v8.3 - Quick Start Guide (Comprehensive Optimization & Centralized Configuration)
 
 ## 🚀 **Cài đặt nhanh**
 
@@ -55,8 +55,11 @@ python run_workflow.py --preset full --force-restart
 - **No synthetic fallback**: Không còn cơ chế fallback sang synthetic; nếu thiếu dữ liệu thật, các stage training sẽ dừng với lỗi rõ ràng
 - **Centralized Path Management**: Tất cả đường dẫn được quản lý tập trung tại `config/paths.py`
 - **Centralized Model Configuration**: Tất cả cấu hình model được quản lý tập trung tại `config/models.py`
-- **Automated Data Discovery**: Hệ thống tự động tìm thư mục processed data mới nhất với timestamp (ví dụ: `features/processed_data_20250818_134752`)
+- **Automated Data Discovery**: Hệ thống tự động tìm thư mục processed data mới nhất với timestamp (ví dụ: `features/processed_data_20250820_134752`)
 - **Data Freshness Validation**: Workflow tự động kiểm tra tính mới của dữ liệu và re-run `data_preparation` khi cần thiết
+- **Advanced HPO**: Hyperparameter optimization với Optuna, Bayesian search, và early stopping
+- **Comprehensive Evaluation**: Multi-tier evaluation với precision, recall, F1, NDCG, MRR, quality metrics
+- **Unified Reports Storage**: Consolidated evaluation reports trong single `reports/` directory
 
 **Các file dữ liệu cần thiết:**
 - `bi_encoder_train.jsonl` (Tier 1)
@@ -186,6 +189,12 @@ python -c "from core.pipeline import LegalQAPipeline; p = LegalQAPipeline(); res
 
 # Test model loading
 python -c "from sentence_transformers import SentenceTransformer; m = SentenceTransformer('models/bi-encoder_20250816_221146'); print('Model loaded:', m is not None)"
+
+# Test comprehensive evaluation
+python -c "from app.pages.analysis import run_comprehensive_evaluation; results = run_comprehensive_evaluation(None); print('Evaluation completed:', results is not None)"
+
+# Test reports loading
+python -c "from app.pages.analysis import load_latest_comprehensive_evaluation; results = load_latest_comprehensive_evaluation(); print('Reports loaded:', results is not None)"
 ```
 
 ## 🏷️ **Model Management**
@@ -273,6 +282,15 @@ python training/run_reranker.py --hpo --trials 150
 
 # Run HPO với custom study
 python training/run_light_ranking.py --hpo --study-name custom_study --trials 200
+
+# Advanced HPO với Bayesian search
+python training/run_bi_encoder.py --hpo --trials 50 --sampler tpe --pruner median
+
+# HPO với early stopping
+python training/run_light_ranking.py --hpo --trials 100 --early-stopping --patience 10
+
+# Check HPO results
+python -c "import json; results = json.load(open('models/light_ranking_latest/hpo_results.json')); print('Best params:', results['best_params']); print('Best score:', results['best_score'])"
 ```
 
 ### **2. Configuration Updates**
@@ -291,6 +309,12 @@ python -c "from config.paths import TRAINING_DATA_PATHS; print('Training paths:'
 
 # Kiểm tra centralized model configuration
 python -c "from config.models import MODEL_TYPES, MODEL_STATUS_KEYS; print('Model types:', list(MODEL_TYPES.keys())); print('Status keys:', MODEL_STATUS_KEYS)"
+
+# Validate training data paths
+python -c "from config.paths import validate_training_data_paths; result = validate_training_data_paths(); print('Path validation:', result['overall']['status'])"
+
+# Get latest processed data directory
+python -c "from config.paths import get_latest_processed_data_dir; print('Latest data dir:', get_latest_processed_data_dir())"
 ```
 
 ### **3. Environment Variables**

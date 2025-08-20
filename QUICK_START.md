@@ -1,6 +1,6 @@
 # LawBot v8.3 - Quick Start Guide (Comprehensive Optimization & Centralized Configuration)
 
-## 🚀 **Cài đặt nhanh**
+## 🚀 **Cài đặt nhanh (Updated: 2025-08-21 - Quality Score & Config Optimization)**
 
 ### **1. Clone & Setup**
 ```bash
@@ -34,7 +34,7 @@ python -c "import sentence_transformers, faiss, optuna; print('All packages inst
 
 ### **1. Automated Pipeline (Recommended)**
 ```bash
-# Chạy toàn bộ pipeline với Contrastive Learning
+# Chạy toàn bộ pipeline với centralized path management
 python run_workflow.py --preset full
 
 # Chạy training stages only (Bi-Encoder + Light Ranking + Cross-Encoder)
@@ -50,16 +50,17 @@ python run_workflow.py --preset evaluation_only
 python run_workflow.py --preset full --force-restart
 ```
 
-### Lưu ý quan trọng về dữ liệu (v8.3)
+### Lưu ý quan trọng về dữ liệu (v8.3 - Updated: 2025-08-21)
 - **Real-data only**: Hệ thống chỉ sử dụng dữ liệu thật được tạo bởi `data_processing/run_preparation.py`
-- **No synthetic fallback**: Không còn cơ chế fallback sang synthetic; nếu thiếu dữ liệu thật, các stage training sẽ dừng với lỗi rõ ràng
 - **Centralized Path Management**: Tất cả đường dẫn được quản lý tập trung tại `config/paths.py`
 - **Centralized Model Configuration**: Tất cả cấu hình model được quản lý tập trung tại `config/models.py`
-- **Automated Data Discovery**: Hệ thống tự động tìm thư mục processed data mới nhất với timestamp (ví dụ: `features/processed_data_20250820_134752`)
+- **Automated Data Discovery**: Hệ thống tự động tìm thư mục processed data mới nhất với timestamp
 - **Data Freshness Validation**: Workflow tự động kiểm tra tính mới của dữ liệu và re-run `data_preparation` khi cần thiết
-- **Advanced HPO**: Hyperparameter optimization với Optuna, Bayesian search, và early stopping
+- **Advanced HPO**: Hyperparameter optimization với Optuna và early stopping
 - **Comprehensive Evaluation**: Multi-tier evaluation với precision, recall, F1, NDCG, MRR, quality metrics
 - **Unified Reports Storage**: Consolidated evaluation reports trong single `reports/` directory
+- **Config Optimization**: `top_k_final: 5` phù hợp với yêu cầu 3-5 kết quả cuối cùng
+- **Quality Score Logic**: Tier-specific thresholds cho từng tier với adjusted scoring
 
 **Các file dữ liệu cần thiết:**
 - `bi_encoder_train.jsonl` (Tier 1)
@@ -241,7 +242,7 @@ python evaluation/run_evaluation.py --compare-models
 python evaluation/run_evaluation.py --model1 bi-encoder_20250816_221146 --model2 bi-encoder_20250816_203414
 ```
 
-## 🔧 **Configuration & Tuning**
+## 🔧 **Configuration & Tuning (Updated: 2025-08-21 - Quality Score & Config Optimization)**
 
 ### **1. Centralized Configuration Management**
 
@@ -283,8 +284,8 @@ python training/run_reranker.py --hpo --trials 150
 # Run HPO với custom study
 python training/run_light_ranking.py --hpo --study-name custom_study --trials 200
 
-# Advanced HPO với Bayesian search
-python training/run_bi_encoder.py --hpo --trials 50 --sampler tpe --pruner median
+# Advanced HPO với Optuna
+python training/run_bi_encoder.py --hpo --trials 50
 
 # HPO với early stopping
 python training/run_light_ranking.py --hpo --trials 100 --early-stopping --patience 10
@@ -332,6 +333,27 @@ export TRANSFORMERS_CACHE=/path/to/cache
 export OMP_NUM_THREADS=8
 ```
 
+### **4. Recent Config & Quality Score Updates (2025-08-21)**
+```bash
+# Kiểm tra config mới
+python -c "from config.loader import config; print('top_k_final:', config.app.top_k_final); print('Expected: 5 (3-5 kết quả cuối cùng)')"
+
+# Test quality score logic mới
+python -c "
+from app.pages.analysis import calculate_quality_score
+# Test Tier 1 (Retrieval) scores
+tier1_scores = [0.52, 0.53, 0.54]
+quality = calculate_quality_score(tier1_scores, 3)
+print(f'Tier 1 Quality: {quality:.3f} (Expected: 1.0)')
+"
+
+# Kiểm tra k_values mới
+python -c "
+from app.pages.analysis import run_comprehensive_evaluation
+print('K-values updated to [3, 5, 10] for realistic evaluation')
+"
+```
+
 ## 🚀 **Application Usage**
 
 ### **1. Start Streamlit App**
@@ -373,7 +395,7 @@ for q in queries:
 "
 ```
 
-## 🐛 **Troubleshooting**
+## 🐛 **Troubleshooting (Updated: 2025-08-21 - Quality Score & Config Issues)**
 
 ### **1. Common Issues**
 ```bash
@@ -419,6 +441,32 @@ python training/run_create_faiss_index.py
 cp -r models/backup/* models/
 ```
 
+### **4. Recent Quality Score & Config Issues (2025-08-21)**
+```bash
+# Kiểm tra quality score logic
+python -c "
+from app.pages.analysis import calculate_quality_score
+# Test với scores thấp (Tier 1 & 3)
+low_scores = [0.52, 0.53, 0.54]
+quality = calculate_quality_score(low_scores, 3)
+print(f'Low scores quality: {quality:.3f} (Should be 1.0 for retrieval/ensemble)')
+"
+
+# Kiểm tra config consistency
+python -c "
+from config.loader import config
+print(f'Config check: top_k_final={config.app.top_k_final}, k_values=[3,5,10]')
+print('Expected: top_k_final=5 for 3-5 results, k_values realistic for evaluation')
+"
+
+# Reset quality score cache nếu cần
+python -c "
+from app.pages.analysis import clear_comprehensive_evaluation_cache
+clear_comprehensive_evaluation_cache()
+print('Quality score cache cleared')
+"
+```
+
 ## 📈 **Performance Optimization**
 
 ### **1. GPU Optimization**
@@ -461,18 +509,28 @@ python training/run_reranker.py --multi-gpu
 # Analyze legal corpus
 python -c "
 import json
-data = json.load(open('data/raw/legal_corpus.json'))
-print('Total articles:', len(data))
-print('Sample content:', data[0]['content'][:100] if 'content' in data[0] else 'N/A')
+from pathlib import Path
+corpus_path = Path('features/processed_data/processed_corpus.json')
+if corpus_path.exists():
+    data = json.load(open(corpus_path))
+    print('Total articles:', len(data))
+    print('Sample content:', list(data.values())[0][:100] if data else 'N/A')
+else:
+    print('Corpus not found')
 "
 
 # Check data distribution
 python -c "
 import json
+from pathlib import Path
 from collections import Counter
-data = json.load(open('data/raw/legal_corpus.json'))
-categories = [d.get('category', 'unknown') for d in data]
-print('Category distribution:', Counter(categories))
+corpus_path = Path('features/processed_data/processed_corpus.json')
+if corpus_path.exists():
+    data = json.load(open(corpus_path))
+    print('Total articles:', len(data))
+    print('Sample AIDs:', list(data.keys())[:5])
+else:
+    print('Corpus not found')
 "
 ```
 
@@ -481,18 +539,28 @@ print('Category distribution:', Counter(categories))
 # Analyze FAISS index
 python -c "
 import faiss
-index = faiss.read_index('features/faiss_index.bin')
-print('Index size:', index.ntotal)
-print('Dimensions:', index.d)
-print('Is trained:', index.is_trained)
+from pathlib import Path
+index_path = Path('models/faiss_index/faiss_index.bin')
+if index_path.exists():
+    index = faiss.read_index(str(index_path))
+    print('Index size:', index.ntotal)
+    print('Dimensions:', index.d)
+    print('Is trained:', index.is_trained)
+else:
+    print('FAISS index not found')
 "
 
-# Check embeddings quality
+# Check training data
 python -c "
-import numpy as np
-embeddings = np.load('features/processed_data_20250816_221131/embeddings.npy')
-print('Embeddings shape:', embeddings.shape)
-print('Embeddings stats:', {'mean': embeddings.mean(), 'std': embeddings.std()}
+from pathlib import Path
+from core.utils.io import load_jsonl
+data_path = Path('features/processed_data/training_data.jsonl')
+if data_path.exists():
+    data = load_jsonl(str(data_path))
+    print('Training samples:', len(data))
+    print('Sample structure:', list(data[0].keys()) if data else 'N/A')
+else:
+    print('Training data not found')
 "
 ```
 
@@ -537,7 +605,19 @@ git log --oneline -5
 
 ---
 
-**🚀 Ready to use LawBot v8.2!** 
+**🚀 Ready to use LawBot v8.3!** 
 
 For detailed information, see [README.md](README.md).
 For advanced usage, see the training and evaluation documentation.
+
+## 🔧 **Key Features v8.3 (Updated: 2025-08-21)**
+
+- **3-Tier Architecture**: Bi-Encoder Retrieval, Light Reranker, Cross-Encoder Ensemble
+- **Centralized Configuration**: Unified path and model management
+- **Automated Workflow**: Smart data validation and stage management
+- **Advanced HPO**: Hyperparameter optimization with Optuna
+- **Comprehensive Evaluation**: Multi-tier performance metrics với tier-specific quality scoring
+- **Real-time Monitoring**: System health and performance tracking
+- **Config Optimization**: `top_k_final: 5` phù hợp với yêu cầu 3-5 kết quả cuối cùng
+- **Quality Score Logic**: Tier-specific thresholds với adjusted scoring cho từng tier
+- **Metrics Calculation**: Sửa logic effective_k để tính chính xác recall và quality scores

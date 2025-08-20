@@ -106,10 +106,16 @@ class AppConfig(BaseModel):
     """Schema for application and search settings."""
 
     top_k_retrieval: PositiveInt
+    top_k_light: PositiveInt  # ✅ Thêm top_k_light
     top_k_final: PositiveInt
     cache_questions_ttl_seconds: int
     cache_pipeline_ttl_seconds: int
     reranker_weights: Dict[str, float]
+    
+    # HOÀN TRẢ về ban đầu: KHÔNG có threshold parameters
+    # retrieval_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
+    # light_reranker_threshold: float = Field(default=0.10, ge=0.0, le=1.0)
+    # cross_encoder_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
 class PipelineTierConfig(BaseModel):

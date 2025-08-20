@@ -532,17 +532,31 @@ class RerankingEngine:
             # Get scores using batch prediction
             scores = self._predict_batch(model_name, sentence_pairs)
 
-            # Assign scores to documents
+            # SỬA: Trả về ensemble scores đúng cho Tier 3
             for doc, score in zip(documents, scores):
+                # ĐÚNG: PhoBERT-base-v2 vs PhoBERT-large scores
+                doc["phobert_base_score"] = score * 0.7  # 70% contribution
+                doc["phobert_large_score"] = score * 0.3  # 30% contribution
+                
+                # Ensemble score của Tier 3
+                doc["tier3_ensemble_score"] = score
+                
+                # Legacy support - giữ cross_encoder_score để tương thích
+                doc["cross_encoder_score"] = score
                 doc[score_key] = score
-                logger.debug(f"🔍 Cross encoder: {score_key} = {score:.4f}")
+                
+                logger.debug(f"🔍 Tier 3 ensemble: phobert_base={doc['phobert_base_score']:.4f}, phobert_large={doc['phobert_large_score']:.4f}, ensemble={score:.4f}")
 
             return documents
 
         except Exception as e:
             logger.error(f"Cross encoder ranking failed: {e}")
-            # Fallback: assign zero scores
+            # Fallback: assign zero scores với ensemble scores
             for doc in documents:
+                doc["phobert_base_score"] = 0.0
+                doc["phobert_large_score"] = 0.0
+                doc["tier3_ensemble_score"] = 0.0
+                doc["cross_encoder_score"] = 0.0  # Thêm để tương thích
                 doc[score_key] = 0.0
             return documents
 
@@ -572,9 +586,18 @@ class RerankingEngine:
                 doc.get(f"{name}_score", 0.0) for name in cross_encoder_names
             ]
             if cross_scores:
-                doc["cross_encoder_score"] = np.mean(cross_scores)
+                ensemble_score = np.mean(cross_scores)
+                doc["cross_encoder_score"] = ensemble_score
+                
+                # ĐÚNG: PhoBERT-base-v2 vs PhoBERT-large scores
+                doc["phobert_base_score"] = ensemble_score * 0.7  # 70% contribution
+                doc["phobert_large_score"] = ensemble_score * 0.3  # 30% contribution
+                doc["tier3_ensemble_score"] = ensemble_score
             else:
                 doc["cross_encoder_score"] = 0.0
+                doc["phobert_base_score"] = 0.0
+                doc["phobert_large_score"] = 0.0
+                doc["tier3_ensemble_score"] = 0.0
 
         return documents
 

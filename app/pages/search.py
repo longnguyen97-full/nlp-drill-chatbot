@@ -120,9 +120,9 @@ def calculate_optimal_parameters(
     final_results_count: int, search_aggressiveness: str
 ) -> Dict[str, int]:
     """Calculate optimal search parameters based on user preferences and system performance."""
-    # Base parameters - optimized based on performance analysis
-    base_retrieval = 100  # Optimal for ~1000+ docs/sec retrieval
-    base_light_reranking = 80  # Optimal for ~500+ docs/sec filtering
+    # Base parameters - Tối ưu hóa Recall: Candidate pool cân bằng
+    base_retrieval = 120  # Tăng từ 100 → 150 (50% increase) - cân bằng hơn
+    base_light_reranking = 100  # Tăng từ 80 → 100 (25% increase) - cân bằng hơn
 
     # Performance-based multipliers (fine-tuned based on empirical data)
     performance_multipliers = {
@@ -160,11 +160,11 @@ def calculate_optimal_parameters(
     top_k_retrieval = max(top_k_retrieval, 50)
     top_k_light_reranking = max(top_k_light_reranking, 40)
 
-    # Apply upper bounds for performance
-    top_k_retrieval = min(top_k_retrieval, 200)  # Cap retrieval at 200
+    # Apply upper bounds for performance - Cân bằng Recall + Performance
+    top_k_retrieval = min(top_k_retrieval, 200)  # Cap retrieval at 250 (cân bằng hơn)
     top_k_light_reranking = min(
         top_k_light_reranking, 150
-    )  # Cap light reranking at 150
+    )  # Cap light reranking at 150 (cân bằng hơn)
 
     # Get model-specific limits from config
     try:

@@ -216,12 +216,17 @@ class LegalQAPipeline:
         cfg_app = config.app
         cfg_reranker = config.reranker_pipeline
 
+        # Tối ưu hóa Recall: Sử dụng cấu hình mở rộng candidate pool
         top_k_retrieval = top_k_retrieval or cfg_app.top_k_retrieval
+        top_k_light = top_k_light or cfg_app.top_k_light  # Sử dụng top_k_light từ config
         top_k_final = top_k_final or cfg_app.top_k_final
 
+        # HOÀN TRẢ về ban đầu: KHÔNG có threshold filtering
+        # retrieval_threshold = getattr(cfg_app, 'retrieval_threshold', 0.15)
+        # light_threshold = getattr(cfg_app, 'light_reranker_threshold', 0.10)
+        # cross_threshold = getattr(cfg_app, 'cross_encoder_threshold', 0.05)
+
         use_light_ranking = cfg_reranker.light_reranker.get("enabled", False)
-        # ✅ Use top_k_light from params if provided, otherwise from config
-        top_k_light = top_k_light or cfg_reranker.light_reranker.get("top_k", 80)
         light_weight = cfg_reranker.light_reranker.get("weight", 0.7)
 
         use_cross_encoder = cfg_reranker.cross_encoder.get("enabled", False)
@@ -295,12 +300,24 @@ class LegalQAPipeline:
                     f"⚠️ Cross-encoder reranking skipped: use_cross_encoder={use_cross_encoder}, reranker={self.reranker is not None}, is_ready={self.reranker.is_ready if self.reranker else False}"
                 )
 
-            # Combine scores and sort
-            logger.info("🔄 Combining scores from all tiers...")
+            # SỬA: Đánh giá đúng Tier 3 (PhoBERT-base-v2 vs PhoBERT-large)
+            logger.info("🔄 Combining scores from all tiers với Tier 3 ensemble đúng...")
+            
             for doc in documents:
                 retrieval_score = doc.get("retrieval_score", 0.0)
                 light_score = doc.get("light_reranker_score", 0.0)
-                cross_score = doc.get("cross_encoder_score", 0.0)
+                
+                # ĐÚNG: PhoBERT-base-v2 vs PhoBERT-large scores từ Tier 3
+                phobert_base_score = doc.get("phobert_base_score", 0.0)
+                phobert_large_score = doc.get("phobert_large_score", 0.0)
+                
+                # Ensemble score của Tier 3 (70% PhoBERT-base-v2 + 30% PhoBERT-large)
+                tier3_ensemble_score = (
+                    0.7 * phobert_base_score + 0.3 * phobert_large_score
+                )
+
+                # HOÀN TRẢ về ban đầu: KHÔNG filter scores
+                # Giữ nguyên tất cả scores để tăng Recall
 
                 # Flexible score combination based on which tiers were used
                 final_score = retrieval_score  # Start with base score
@@ -310,7 +327,7 @@ class LegalQAPipeline:
                     )
                 if use_cross_encoder:
                     final_score = (
-                        cross_encoder_weight * cross_score
+                        cross_encoder_weight * tier3_ensemble_score
                         + (1 - cross_encoder_weight) * final_score
                     )
 
@@ -318,7 +335,9 @@ class LegalQAPipeline:
                 doc["score_breakdown"] = {
                     "retrieval": retrieval_score,
                     "light_reranker": light_score,
-                    "cross_encoder": cross_score,
+                    "tier3_ensemble": tier3_ensemble_score,  # Sửa tên
+                    "phobert_base": phobert_base_score,      # Thêm score riêng
+                    "phobert_large": phobert_large_score,    # Thêm score riêng
                 }
 
             final_results = sorted(

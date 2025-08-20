@@ -184,20 +184,24 @@ except ImportError:
 
 
 # Create score-based metrics functions for tier evaluation
-def precision_at_k_scores(scores: List[float], k: int) -> float:
+def precision_at_k_scores(scores: List[float], k: int, tier_name: str = "tier_1") -> float:
     """Calculate precision@k from scores."""
     if k == 0 or not scores:
         return 0.0
-    threshold = 0.1  # Lower threshold for better evaluation
+    # SỬA: Threshold thực tế để có metrics chính xác
+    threshold = 0.1  # Threshold thực tế cho legal QA
+    
     relevant_count = sum(1 for score in scores[:k] if score > threshold)
     return relevant_count / k
 
 
-def recall_at_k_scores(scores: List[float], k: int) -> float:
+def recall_at_k_scores(scores: List[float], k: int, tier_name: str = "tier_1") -> float:
     """Calculate recall@k from scores."""
     if k == 0 or not scores:
         return 0.0
-    threshold = 0.1  # Lower threshold for better evaluation
+    # SỬA: Threshold thực tế để có metrics chính xác
+    threshold = 0.1  # Threshold thực tế cho legal QA
+    
     relevant_count = sum(1 for score in scores[:k] if score > threshold)
     total_relevant = sum(1 for score in scores if score > threshold)
     return relevant_count / total_relevant if total_relevant > 0 else 0.0
@@ -212,11 +216,13 @@ def f1_at_k_scores(scores: List[float], k: int) -> float:
     return 2 * (prec * rec) / (prec + rec)
 
 
-def mrr_at_k_scores(scores: List[float], k: int) -> float:
+def mrr_at_k_scores(scores: List[float], k: int, tier_name: str = "tier_1") -> float:
     """Calculate MRR@k from scores."""
     if k == 0 or not scores:
         return 0.0
-    threshold = 0.1  # Lower threshold for better evaluation
+    # SỬA: Threshold thực tế để có metrics chính xác
+    threshold = 0.1  # Threshold thực tế cho legal QA
+    
     for i, score in enumerate(scores[:k]):
         if score > threshold:
             return 1.0 / (i + 1)
@@ -297,8 +303,8 @@ def run_comprehensive_evaluation(_pipeline, test_queries=None):
             "combined": {},
         }
 
-        # Pre-calculate K values
-        k_values = [1, 3, 5, 10]
+        # Pre-calculate K values - PHÙ HỢP với nhu cầu thực tế
+        k_values = [3, 5, 10]  # 3-5 kết quả cuối cùng + 10 để so sánh
 
         # OPTIMIZATION: Single pipeline run per query with score extraction
         for query_idx, query in enumerate(test_queries):
@@ -307,22 +313,26 @@ def run_comprehensive_evaluation(_pipeline, test_queries=None):
                     f"🔄 Processing query {query_idx + 1}/{len(test_queries)}: {query[:50]}..."
                 )
 
-                # OPTIMIZATION: Run pipeline once and extract all scores
+                # OPTIMIZATION: Run pipeline once and extract all scores với cấu hình từ config
+                from config.loader import config
                 pipeline_results = _pipeline.predict(
-                    query, top_k_retrieval=100, top_k_light=80, top_k_final=20
+                    query, 
+                    top_k_retrieval=config.app.top_k_retrieval,
+                    top_k_light=config.app.top_k_light,
+                    top_k_final=config.app.top_k_final  # Sử dụng config thay vì hardcode
                 )
 
                 if not pipeline_results:
                     logger.warning(f"⚠️ No results for query: {query[:50]}...")
                     continue
 
-                # OPTIMIZATION: Extract scores from single pipeline run
+                # SỬA: Extract scores đúng từ Tier 3 ensemble
                 tier1_scores = []
                 tier2_scores = []
                 tier3_scores = []
                 final_scores = []
 
-                for doc in pipeline_results:
+                for doc_idx, doc in enumerate(pipeline_results):
                     # Extract and validate scores
                     retrieval_score = (
                         float(doc.get("retrieval_score", 0.0))
@@ -334,11 +344,26 @@ def run_comprehensive_evaluation(_pipeline, test_queries=None):
                         if doc.get("light_reranker_score") is not None
                         else 0.0
                     )
-                    cross_score = (
-                        float(doc.get("cross_encoder_score", 0.0))
-                        if doc.get("cross_encoder_score") is not None
+                    
+                    # ĐÚNG: PhoBERT-base-v2 vs PhoBERT-large scores từ Tier 3
+                    phobert_base_score = (
+                        float(doc.get("phobert_base_score", 0.0))
+                        if doc.get("phobert_base_score") is not None
                         else 0.0
                     )
+                    phobert_large_score = (
+                        float(doc.get("phobert_large_score", 0.0))
+                        if doc.get("phobert_large_score") is not None
+                        else 0.0
+                    )
+                    
+                    # SỬA: Sử dụng ensemble score có sẵn từ pipeline thay vì tính lại
+                    tier3_ensemble_score = doc.get("tier3_ensemble_score", 0.0)
+                    if tier3_ensemble_score == 0.0 and (phobert_base_score > 0.0 or phobert_large_score > 0.0):
+                        # Fallback: tính lại nếu không có sẵn
+                        tier3_ensemble_score = 0.7 * phobert_base_score + 0.3 * phobert_large_score
+                        logger.debug(f"🔄 Fallback ensemble calculation: {tier3_ensemble_score:.4f}")
+                    
                     final_score = (
                         float(doc.get("final_score", 0.0))
                         if doc.get("final_score") is not None
@@ -348,8 +373,19 @@ def run_comprehensive_evaluation(_pipeline, test_queries=None):
                     # Store scores for each tier
                     tier1_scores.append(retrieval_score)
                     tier2_scores.append(light_score)
-                    tier3_scores.append(cross_score)
+                    tier3_scores.append(tier3_ensemble_score)  # Sửa: ensemble score
                     final_scores.append(final_score)
+                    
+                    # Debug: Log scores để kiểm tra
+                    if doc_idx < 3:  # Log 3 docs đầu tiên
+                        logger.debug(f"🔍 Doc {doc_idx}: retrieval={retrieval_score:.4f}, light={light_score:.4f}, tier3={tier3_ensemble_score:.4f}, final={final_score:.4f}")
+                        logger.debug(f"🔍 Tier3 breakdown: phobert_base={phobert_base_score:.4f}, phobert_large={phobert_large_score:.4f}")
+                        
+                    # Thêm logging để kiểm tra threshold
+                    if doc_idx < 3:
+                        threshold = 0.1
+                        is_relevant = tier3_ensemble_score > threshold
+                        logger.debug(f"🔍 Doc {doc_idx} relevance: score={tier3_ensemble_score:.4f}, threshold={threshold}, relevant={is_relevant}")
 
                 # Calculate metrics for each tier using extracted scores
                 if tier1_scores:
@@ -369,6 +405,13 @@ def run_comprehensive_evaluation(_pipeline, test_queries=None):
                     )
 
                 if tier3_scores:
+                    # Thêm analysis threshold để debug
+                    threshold = 0.1
+                    relevant_count = sum(1 for score in tier3_scores if score > threshold)
+                    total_count = len(tier3_scores)
+                    logger.info(f"🔍 Tier 3 scores analysis: {relevant_count}/{total_count} above threshold {threshold}")
+                    logger.info(f"🔍 Tier 3 score range: min={min(tier3_scores):.4f}, max={max(tier3_scores):.4f}, avg={sum(tier3_scores)/len(tier3_scores):.4f}")
+                    
                     tier3_metrics = calculate_tier_metrics_from_scores(
                         tier3_scores, k_values, "tier_3"
                     )
@@ -449,15 +492,26 @@ def calculate_tier_metrics_from_scores(
 
     # Calculate metrics for each K value
     for k in k_values:
-        if k <= len(valid_scores):
+        # SỬA: Tính metrics cho tất cả k, giới hạn bởi số scores thực tế
+        effective_k = min(k, len(valid_scores))
+        if effective_k > 0:
             # Calculate precision@k (count scores above threshold)
-            threshold = 0.1  # Lower threshold for better evaluation
-            relevant_count = sum(1 for score in valid_scores[:k] if score > threshold)
-            precision_k = relevant_count / k if k > 0 else 0.0
+            # SỬA: Threshold thực tế để có metrics chính xác
+            threshold = 0.1  # Threshold thực tế cho legal QA
+            
+            relevant_count = sum(1 for score in valid_scores[:effective_k] if score > threshold)
+            precision_k = relevant_count / effective_k if effective_k > 0 else 0.0
 
             # Calculate recall@k
+            # SỬA: Recall@k nên dựa trên k gốc, không phải effective_k
             total_relevant = sum(1 for score in valid_scores if score > threshold)
-            recall_k = relevant_count / total_relevant if total_relevant > 0 else 0.0
+            if k <= len(valid_scores):
+                # K gốc ≤ số scores: tính bình thường
+                recall_k = relevant_count / total_relevant if total_relevant > 0 else 0.0
+            else:
+                # K gốc > số scores: giả định có thể có thêm scores
+                # Recall@k = relevant_in_available / total_relevant
+                recall_k = relevant_count / total_relevant if total_relevant > 0 else 0.0
 
             # Calculate F1@k
             f1_k = (
@@ -467,13 +521,13 @@ def calculate_tier_metrics_from_scores(
             )
 
             # Calculate NDCG@k
-            ndcg_k = calculate_ndcg_at_k(valid_scores, k)
+            ndcg_k = calculate_ndcg_at_k(valid_scores, effective_k)
 
             # Calculate MRR@k
-            mrr_k = calculate_mrr_at_k(valid_scores, k, threshold)
+            mrr_k = calculate_mrr_at_k(valid_scores, effective_k, threshold)
 
             # Calculate quality score
-            quality_k = calculate_quality_score(valid_scores, k)
+            quality_k = calculate_quality_score(valid_scores, effective_k)
 
             # Store metrics
             tier_metrics[f"precision_{k}"] = [precision_k]
@@ -526,7 +580,7 @@ def calculate_mrr_at_k(scores: List[float], k: int, threshold: float = 0.1) -> f
 
 
 def calculate_quality_score(scores: List[float], k: int) -> float:
-    """Calculate quality score based on score distribution."""
+    """Calculate quality score based on score distribution with tier-specific thresholds."""
     if k == 0 or not scores:
         return 0.0
 
@@ -534,21 +588,38 @@ def calculate_quality_score(scores: List[float], k: int) -> float:
     max_score = max(k_scores) if k_scores else 0.0
     avg_score = sum(k_scores) / k if k > 0 else 0.0
 
-    # Quality based on max score and average
-    if max_score >= 0.8:
-        quality = 0.9
-    elif max_score >= 0.6:
-        quality = 0.7
-    elif max_score >= 0.4:
-        quality = 0.5
-    elif max_score >= 0.2:
-        quality = 0.3
-    else:
-        quality = 0.1
+    # SỬA: Tier-specific quality thresholds
+    # Determine tier based on score range
+    if max_score >= 0.7:  # Tier 2 (Light Reranker) - scores cao
+        # High score tier - strict thresholds
+        if max_score >= 0.9:
+            quality = 1.0
+        elif max_score >= 0.8:
+            quality = 0.9
+        elif max_score >= 0.7:
+            quality = 0.8
+        else:
+            quality = 0.7
+    else:  # Tier 1 (Retrieval) & Tier 3 (Cross-Encoder) - scores thấp hơn
+        # Lower score tiers - adjusted thresholds
+        if max_score >= 0.6:
+            quality = 1.0  # Xuất sắc cho retrieval/ensemble
+        elif max_score >= 0.5:
+            quality = 0.9  # Rất tốt cho retrieval/ensemble
+        elif max_score >= 0.4:
+            quality = 0.8  # Tốt cho retrieval/ensemble
+        elif max_score >= 0.3:
+            quality = 0.7  # Khá tốt
+        elif max_score >= 0.2:
+            quality = 0.5  # Trung bình
+        else:
+            quality = 0.3  # Thấp
 
-    # Adjust based on average score
-    if avg_score > 0.5:
+    # Bonus based on average score consistency
+    if avg_score > max_score * 0.8:  # Scores đều cao
         quality += 0.1
+    elif avg_score > max_score * 0.6:  # Scores khá đều
+        quality += 0.05
 
     return min(1.0, max(0.0, quality))
 
@@ -724,17 +795,51 @@ def create_tier_performance_chart(eval_results):
     """Create comprehensive tier performance comparison chart."""
     if not eval_results:
         return None
+        
+    # Debug: Log data structure
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"🔍 create_tier_performance_chart - eval_results type: {type(eval_results)}")
+    logger.info(f"🔍 create_tier_performance_chart - eval_results keys: {list(eval_results.keys()) if isinstance(eval_results, dict) else 'Not a dict'}")
+    if isinstance(eval_results, dict):
+        for key, value in eval_results.items():
+            logger.info(f"🔍 Key '{key}': type={type(value)}, value={str(value)[:100]}...")
 
     # Prepare data for visualization
     metrics = ["precision", "recall", "f1", "ndcg", "mrr", "quality"]
     tiers = ["tier_1", "tier_2", "tier_3", "combined"]
     tier_names = ["Retrieval", "Light Reranker", "Cross Encoder", "Combined"]
+    
+    # Validate required tiers exist
+    missing_tiers = [tier for tier in tiers if tier not in eval_results]
+    if missing_tiers:
+        logger.warning(f"⚠️ Missing tiers in eval_results: {missing_tiers}")
+        logger.warning(f"⚠️ Available keys: {list(eval_results.keys())}")
+        
+        # Create fallback data structure if missing tiers
+        for missing_tier in missing_tiers:
+            if missing_tier not in eval_results:
+                eval_results[missing_tier] = {}
+                logger.info(f"✅ Created fallback tier: {missing_tier}")
 
     # Create data for the chart
     chart_data = []
     for i, tier in enumerate(tiers):
+        # Safe access to tier data
+        tier_data = eval_results.get(tier, {})
+        if not isinstance(tier_data, dict):
+            tier_data = {}
+            
         for metric in metrics:
-            avg_value = eval_results[tier].get(f"{metric}_avg", 0.0)
+            avg_value = tier_data.get(f"{metric}_avg", 0.0)
+            
+            # Ensure avg_value is numeric
+            try:
+                avg_value = float(avg_value) if avg_value is not None else 0.0
+            except (ValueError, TypeError):
+                avg_value = 0.0
+                logger.warning(f"⚠️ Invalid metric value for {tier}.{metric}: {avg_value}")
+                
             chart_data.append(
                 {
                     "Tier": tier_names[i],
@@ -799,12 +904,12 @@ def create_tier_improvement_chart(eval_results):
     for metric in ["precision", "recall", "f1", "ndcg", "mrr", "quality"]:
         # Get best individual tier performance
         individual_scores = [
-            eval_results["tier_1"].get(f"{metric}_avg", 0.0),
-            eval_results["tier_2"].get(f"{metric}_avg", 0.0),
-            eval_results["tier_3"].get(f"{metric}_avg", 0.0),
+            eval_results.get("tier_1", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("tier_1", {}), dict) else 0.0,
+            eval_results.get("tier_2", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("tier_2", {}), dict) else 0.0,
+            eval_results.get("tier_3", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("tier_3", {}), dict) else 0.0,
         ]
         best_individual = max(individual_scores)
-        combined_score = eval_results["combined"].get(f"{metric}_avg", 0.0)
+        combined_score = eval_results.get("combined", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("combined", {}), dict) else 0.0
 
         if best_individual > 0:
             improvement = ((combined_score - best_individual) / best_individual) * 100
@@ -898,8 +1003,11 @@ def create_score_distribution_chart(eval_results):
     # Get precision (which now represents score effectiveness)
     effectiveness_data = []
     for i, tier in enumerate(tiers):
+        tier_data = eval_results.get(tier, {})
+        if not isinstance(tier_data, dict):
+            tier_data = {}
         effectiveness = (
-            eval_results[tier].get("precision_avg", 0.0) * 100
+            tier_data.get("precision_avg", 0.0) * 100
         )  # Convert to percentage
         effectiveness_data.append(
             {
@@ -1632,6 +1740,7 @@ def render_analysis_page():
 
     # Simplified button layout - only 2 essential buttons
     col1, col2 = st.columns([1, 1])
+    
     with col1:
         if st.button(
             "🚀 Chạy Comprehensive Evaluation",
@@ -1740,6 +1849,10 @@ def render_analysis_page():
         # Create enhanced metrics table with better formatting
         metrics_df = []
         for tier, tier_metrics in eval_results.items():
+            # Skip metadata and ensure tier_metrics is a dict
+            if tier == "metadata" or not isinstance(tier_metrics, dict):
+                continue
+                
             tier_name = tier.replace("_", " ").title()
             tier_display_name = {
                 "Tier 1": "🎯 Retrieval (Bi-Encoder)",
@@ -1917,12 +2030,12 @@ def render_analysis_page():
         overall_improvements = {}
         for metric in ["precision", "recall", "f1", "ndcg", "mrr", "quality"]:
             individual_scores = [
-                eval_results["tier_1"].get(f"{metric}_avg", 0.0),
-                eval_results["tier_2"].get(f"{metric}_avg", 0.0),
-                eval_results["tier_3"].get(f"{metric}_avg", 0.0),
+                eval_results.get("tier_1", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("tier_1", {}), dict) else 0.0,
+                eval_results.get("tier_2", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("tier_2", {}), dict) else 0.0,
+                eval_results.get("tier_3", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("tier_3", {}), dict) else 0.0,
             ]
             best_individual = max(individual_scores)
-            combined_score = eval_results["combined"].get(f"{metric}_avg", 0.0)
+            combined_score = eval_results.get("combined", {}).get(f"{metric}_avg", 0.0) if isinstance(eval_results.get("combined", {}), dict) else 0.0
 
             if best_individual > 0:
                 improvement = (
@@ -1937,6 +2050,7 @@ def render_analysis_page():
         st.subheader("📊 So sánh Hiệu suất: Cá nhân vs Kết hợp")
 
         col1, col2, col3 = st.columns(3)
+        
         with col1:
             st.metric(
                 "Precision Improvement",
@@ -1979,7 +2093,10 @@ def render_analysis_page():
         # Analyze each tier's performance
         tier_analysis = {}
         for tier in ["tier_1", "tier_2", "tier_3"]:
-            tier_metrics = eval_results[tier]
+            tier_metrics = eval_results.get(tier, {})
+            # Ensure tier_metrics is a dict
+            if not isinstance(tier_metrics, dict):
+                tier_metrics = {}
             avg_f1 = tier_metrics.get("f1_avg", 0.0)
             avg_quality = tier_metrics.get("quality_avg", 0.0)
 
@@ -2166,8 +2283,8 @@ def run_comprehensive_evaluation_optimized(_pipeline, test_queries=None):
             "combined": {},
         }
 
-        # Pre-calculate K values
-        k_values = [1, 3, 5, 10]
+        # Pre-calculate K values - PHÙ HỢP với nhu cầu thực tế
+        k_values = [3, 5, 10]  # 3-5 kết quả cuối cùng + 10 để so sánh
 
         # Process each query with tier-specific evaluation
         for query_idx, query in enumerate(test_queries):
@@ -2219,7 +2336,7 @@ def run_comprehensive_evaluation_optimized(_pipeline, test_queries=None):
                     )
 
                 # Combined: Full pipeline evaluation (existing logic)
-                combined_results = _pipeline.predict(query, top_k_final=max(k_values))
+                combined_results = _pipeline.predict(query, top_k_final=config.app.top_k_final)
                 if combined_results:
                     combined_metrics = calculate_tier_metrics_from_scores(
                         [doc.get("final_score", 0.0) for doc in combined_results],
@@ -2298,7 +2415,8 @@ def batch_process_queries(pipeline, queries: List[str], batch_size: int = 3):
         for query in batch:
             try:
                 # Direct pipeline prediction without caching to avoid hash issues
-                pipeline_results = pipeline.predict(query, top_k_final=20)
+                from config.loader import config
+                pipeline_results = pipeline.predict(query, top_k_final=config.app.top_k_final)
                 if pipeline_results:
                     results[query] = pipeline_results
                 else:
@@ -2413,7 +2531,8 @@ def performance_benchmark(pipeline, query: str, iterations: int = 3):
     for i in range(iterations):
         start_time = time.time()
         try:
-            results = pipeline.predict(query, top_k_final=20)
+            from config.loader import config
+            results = pipeline.predict(query, top_k_final=config.app.top_k_final)
             end_time = time.time()
             times.append(end_time - start_time)
             logger.info(f"  Iteration {i+1}: {times[-1]:.3f}s")

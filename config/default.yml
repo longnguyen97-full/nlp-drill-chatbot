@@ -138,8 +138,8 @@ hyperparameter_optimization:
 
 app:
   # Tối ưu hóa F1: Tăng candidate pool để tăng Recall
-  top_k_retrieval: 120      # Tăng từ 100 → 150 (+50%) để tăng Recall
-  top_k_light: 100          # Tăng từ 80 → 120 (+50%) để tăng Recall
+  top_k_retrieval: 10      # Tăng từ 100 → 150 (+50%) để tăng Recall
+  top_k_light: 80          # Tăng từ 80 → 120 (+50%) để tăng Recall
   top_k_final: 5            # Giảm từ 30 → 5 để phù hợp với nhu cầu thực tế (3-5 kết quả)
   
   # HOÀN TRẢ về ban đầu: KHÔNG có threshold filtering

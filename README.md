@@ -58,11 +58,11 @@ LawBot là hệ thống trả lời câu hỏi pháp lý thông minh sử dụng
 - **Performance**: Fast retrieval với độ chính xác tốt
 
 ### **⚡ Tier 2 - Light Reranker**
-- **Mô hình**: PhoBERT-base-v2 với ADAPT enhancement
+- **Mô hình**: Vietnamese Bi-Encoder với Contrastive Learning
 - **Kỹ thuật**: 
-  - PhoBERT-base-v2 fine-tuning
-  - ADAPT domain adaptation cho pháp luật Việt Nam
+  - PhoBERT-base-v2 fine-tuning (independent training)
   - HPO optimization cho training parameters
+  - Hard Negative Mining cho training data quality
 - **Metric**: Precision@K (K=80) - Lọc candidates chất lượng
 - **Performance**: Fast filtering với domain expertise
 
@@ -421,7 +421,7 @@ python -c "import faiss; index = faiss.read_index('features/faiss_index.bin'); p
 - **Average Similarity Score**: 0.87 cho relevant queries
 - **Index Size**: 17,989 documents (768 dimensions)
 - **Query Processing Time**: <100ms
-- **Model Size**: 517MB (PhoBERT-base-v2 + ADAPT)
+- **Model Size**: 517MB (Vietnamese Bi-Encoder + Contrastive Learning)
 - **Training Time**: ~20 seconds (CUDA optimized)
 - **HPO Results**: Learning Rate: 2e-5, Batch Size: 16, Epochs: 5
 - **Best F1 Score**: 0.81 (vs. baseline 0.75)
@@ -430,7 +430,7 @@ python -c "import faiss; index = faiss.read_index('features/faiss_index.bin'); p
 - **Precision@80**: 0.92+ (92% precision cho top 80)
 - **Hard Negative Mining Ratio**: 0.3 (30% hard negatives)
 - **Training Time**: ~19 seconds (CUDA optimized)
-- **Model Size**: 517MB (PhoBERT-base-v2 + Hard Negative Mining)
+- **Model Size**: 517MB (PhoBERT-base-v2 + Independent Training)
 - **Status**: ✅ Ready for production
 - **HPO Results**: Learning Rate: 3e-5, Batch Size: 32, Epochs: 3
 - **Best F1 Score**: 0.90 (vs. baseline 0.82)

@@ -18,7 +18,12 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 try:
-    from core.utils.system_check import get_model_status, get_faiss_index_status
+    from core.utils.system_check import (
+        get_model_status, 
+        get_faiss_index_status, 
+        get_dataset_status, 
+        get_hardware_requirements
+    )
     from core.utils.io import load_json
     from core.utils.logging_manager import get_logger
 except ImportError as e:
@@ -38,6 +43,12 @@ def load_system_data():
         # Load FAISS status
         faiss_status = get_faiss_index_status()
 
+        # Load dataset status
+        dataset_status = get_dataset_status()
+
+        # Load hardware requirements
+        hardware_requirements = get_hardware_requirements()
+
         # Load basic evaluation data if available
         evaluation_data = None
         evaluation_dir = Path("evaluation")
@@ -54,6 +65,8 @@ def load_system_data():
         return {
             "model_status": model_status,
             "faiss_status": faiss_status,
+            "dataset_status": dataset_status,
+            "hardware_requirements": hardware_requirements,
             "evaluation_data": evaluation_data,
         }
     except Exception as e:
@@ -258,6 +271,298 @@ def create_faiss_index_status(system_data):
         st.warning("⚠️ Không có thông tin FAISS Index")
 
 
+def create_dataset_status_display(system_data):
+    """Create Dataset Status display."""
+    st.subheader("📊 Thông tin Dataset & Dữ liệu")
+
+    if not system_data:
+        st.warning("⚠️ Không thể load thông tin Dataset")
+        return
+
+    dataset_status = system_data.get("dataset_status", {})
+
+    if not dataset_status:
+        st.warning("⚠️ Không có thông tin Dataset")
+        return
+
+    # Overall dataset statistics
+    overall_stats = dataset_status.get("overall_stats", {})
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        total_files = overall_stats.get("total_files", 0)
+        st.metric("Tổng số Files", total_files)
+
+    with col2:
+        total_size = overall_stats.get("total_size_mb", 0)
+        st.metric("Tổng dung lượng", f"{total_size:.1f} MB")
+
+    with col3:
+        total_raw_records = overall_stats.get("total_raw_records", 0)
+        st.metric("Tổng Records Raw", f"{total_raw_records:,}")
+
+    with col4:
+        data_available = overall_stats.get("data_available", False)
+        status_text = "✅ Có dữ liệu" if data_available else "❌ Không có dữ liệu"
+        st.metric("Trạng thái", status_text)
+
+    # Detailed record counts
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        total_processed_records = overall_stats.get("total_processed_records", 0)
+        st.metric("Records Processed", f"{total_processed_records:,}")
+    
+    with col2:
+        total_validation_records = overall_stats.get("total_validation_records", 0)
+        st.metric("Records Validation", f"{total_validation_records:,}")
+    
+    with col3:
+        total_all_records = overall_stats.get("total_all_records", 0)
+        st.metric("Tổng Records", f"{total_all_records:,}")
+
+    # Raw Data Section
+    raw_data = dataset_status.get("raw_data", {})
+    if raw_data.get("exists"):
+        with st.expander("📁 Raw Data (Dữ liệu gốc)", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.write(f"**Số lượng files:** {raw_data.get('file_count', 0)}")
+            
+            with col2:
+                total_articles = raw_data.get("total_articles", 0)
+                st.write(f"**Tổng Articles:** {total_articles:,}")
+            
+            with col3:
+                total_questions = raw_data.get("total_questions", 0)
+                st.write(f"**Tổng Questions:** {total_questions:,}")
+            
+            if raw_data.get("files"):
+                # Enhanced dataframe with more details
+                raw_data_list = []
+                for name, info in raw_data["files"].items():
+                    row_data = {
+                        "File": name,
+                        "Kích thước (MB)": info["size_mb"],
+                        "Số lượng records": info["record_count"],
+                        "Loại dữ liệu": info.get("data_type", "unknown"),
+                        "Đường dẫn": info["path"]
+                    }
+                    
+                    # Add specific counts for known file types
+                    if name == "legal_corpus.json":
+                        row_data["Số lượng Laws"] = info.get("law_count", 0)
+                        row_data["Số lượng Articles"] = info.get("article_count", 0)
+                    elif name in ["train.json", "public_test.json"]:
+                        row_data["Số lượng Questions"] = info.get("question_count", 0)
+                    
+                    raw_data_list.append(row_data)
+                
+                raw_df = pd.DataFrame(raw_data_list)
+                st.dataframe(raw_df, use_container_width=True)
+                
+                # Show summary for legal corpus
+                if "legal_corpus.json" in raw_data["files"]:
+                    legal_info = raw_data["files"]["legal_corpus.json"]
+                    st.info(f"📚 **Legal Corpus:** {legal_info.get('law_count', 0):,} laws với {legal_info.get('article_count', 0):,} articles")
+                
+                # Show summary for questions
+                if total_questions > 0:
+                    st.info(f"❓ **Questions:** {total_questions:,} questions (train + test)")
+
+    # Processed Data Section
+    processed_data = dataset_status.get("processed_data", {})
+    if processed_data.get("exists"):
+        with st.expander("🔧 Processed Data (Dữ liệu đã xử lý)", expanded=True):
+            st.write(f"**Thư mục mới nhất:** `{processed_data.get('latest_directory', 'N/A')}`")
+            
+            # Show metadata if available
+            metadata = processed_data.get("metadata", {})
+            if metadata:
+                st.write("**Metadata:**")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Tổng examples", metadata.get("total_examples", 0))
+                with col2:
+                    st.metric("Bi-Encoder examples", metadata.get("bi_encoder_examples", 0))
+                with col3:
+                    st.metric("Cross-Encoder examples", metadata.get("cross_encoder_examples", 0))
+                with col4:
+                    st.metric("Light Ranking examples", metadata.get("light_ranking_examples", 0))
+            
+            # Show individual files
+            if processed_data.get("files"):
+                st.write("**Files chi tiết:**")
+                processed_df = pd.DataFrame([
+                    {
+                        "File": name,
+                        "Kích thước (MB)": info["size_mb"],
+                        "Số lượng records": info["record_count"],
+                        "Đường dẫn": info["path"]
+                    }
+                    for name, info in processed_data["files"].items()
+                ])
+                st.dataframe(processed_df, use_container_width=True)
+
+    # Validation Sets Section
+    validation_sets = dataset_status.get("validation_sets", {})
+    if validation_sets.get("exists"):
+        with st.expander("✅ Validation Sets (Bộ dữ liệu kiểm thử)", expanded=True):
+            st.write(f"**Số lượng files:** {validation_sets.get('file_count', 0)}")
+            
+            if validation_sets.get("files"):
+                validation_df = pd.DataFrame([
+                    {
+                        "File": name,
+                        "Kích thước (MB)": info["size_mb"],
+                        "Số lượng records": info["record_count"],
+                        "Đường dẫn": info["path"]
+                    }
+                    for name, info in validation_sets["files"].items()
+                ])
+                st.dataframe(validation_df, use_container_width=True)
+
+    # Data Health Check
+    if data_available:
+        st.success("✅ Dataset khả dụng và sẵn sàng cho training")
+    else:
+        st.error("❌ Dataset không khả dụng - cần kiểm tra dữ liệu")
+
+
+def create_hardware_requirements_display(system_data):
+    """Create Hardware Requirements display."""
+    st.subheader("💻 Yêu cầu Phần cứng & Tài nguyên")
+
+    if not system_data:
+        st.warning("⚠️ Không thể load thông tin phần cứng")
+        return
+
+    hardware_req = system_data.get("hardware_requirements", {})
+
+    if not hardware_req:
+        st.warning("⚠️ Không có thông tin phần cứng")
+        return
+
+    # Current system status
+    current_system = hardware_req.get("current_system", {})
+    compatibility = hardware_req.get("compatibility", {})
+    
+    # Performance level indicator
+    performance_level = compatibility.get("performance_level", "unknown")
+    performance_colors = {
+        "optimal": "🟢",
+        "recommended": "🟡", 
+        "minimum": "🟠",
+        "below_minimum": "🔴"
+    }
+    performance_icon = performance_colors.get(performance_level, "⚪")
+    
+    st.write(f"**Mức độ hiệu suất hiện tại:** {performance_icon} {performance_level.upper()}")
+
+    # Current system metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        cpu_cores = current_system.get("cpu_cores", 0)
+        st.metric("CPU Cores", cpu_cores)
+    
+    with col2:
+        memory_gb = current_system.get("memory_gb", 0)
+        st.metric("RAM (GB)", f"{memory_gb:.1f}")
+    
+    with col3:
+        gpu_available = current_system.get("gpu_available", False)
+        gpu_status = "✅ Có GPU" if gpu_available else "❌ Không có GPU"
+        st.metric("GPU Status", gpu_status)
+    
+    with col4:
+        gpu_count = current_system.get("gpu_count", 0)
+        st.metric("GPU Count", gpu_count)
+
+    # GPU details if available
+    if current_system.get("gpu_available"):
+        gpu_names = current_system.get("gpu_names", [])
+        if gpu_names:
+            st.write("**GPU Details:**")
+            for i, gpu_name in enumerate(gpu_names):
+                st.info(f"GPU {i+1}: {gpu_name}")
+
+    # Requirements comparison
+    with st.expander("📋 So sánh với Yêu cầu Hệ thống", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.subheader("🔴 Minimum")
+            min_req = hardware_req.get("minimum", {})
+            st.write(f"**CPU:** {min_req.get('cpu_cores', 0)} cores")
+            st.write(f"**RAM:** {min_req.get('memory_gb', 0)} GB")
+            st.write(f"**Storage:** {min_req.get('storage_gb', 0)} GB")
+            st.write(f"**GPU:** {min_req.get('gpu', 'N/A')}")
+            
+            meets_min = compatibility.get("meets_minimum", False)
+            if meets_min:
+                st.success("✅ Đạt yêu cầu tối thiểu")
+            else:
+                st.error("❌ Không đạt yêu cầu tối thiểu")
+        
+        with col2:
+            st.subheader("🟡 Recommended")
+            rec_req = hardware_req.get("recommended", {})
+            st.write(f"**CPU:** {rec_req.get('cpu_cores', 0)} cores")
+            st.write(f"**RAM:** {rec_req.get('memory_gb', 0)} GB")
+            st.write(f"**Storage:** {rec_req.get('storage_gb', 0)} GB")
+            st.write(f"**GPU:** {rec_req.get('gpu', 'N/A')}")
+            
+            meets_rec = compatibility.get("meets_recommended", False)
+            if meets_rec:
+                st.success("✅ Đạt yêu cầu khuyến nghị")
+            else:
+                st.warning("⚠️ Chưa đạt yêu cầu khuyến nghị")
+        
+        with col3:
+            st.subheader("🟢 Optimal")
+            opt_req = hardware_req.get("optimal", {})
+            st.write(f"**CPU:** {opt_req.get('cpu_cores', 0)} cores")
+            st.write(f"**RAM:** {opt_req.get('memory_gb', 0)} GB")
+            st.write(f"**Storage:** {opt_req.get('storage_gb', 0)} GB")
+            st.write(f"**GPU:** {opt_req.get('gpu', 'N/A')}")
+            
+            meets_opt = compatibility.get("meets_optimal", False)
+            if meets_opt:
+                st.success("✅ Đạt yêu cầu tối ưu")
+            else:
+                st.info("ℹ️ Chưa đạt yêu cầu tối ưu")
+
+    # Recommendations
+    st.subheader("💡 Khuyến nghị")
+    
+    if performance_level == "optimal":
+        st.success("🎉 Hệ thống của bạn đạt yêu cầu tối ưu!")
+        st.info("Có thể chạy chatbot với hiệu suất cao nhất")
+    elif performance_level == "recommended":
+        st.success("✅ Hệ thống đạt yêu cầu khuyến nghị")
+        st.info("Có thể chạy chatbot với hiệu suất tốt")
+    elif performance_level == "minimum":
+        st.warning("⚠️ Hệ thống chỉ đạt yêu cầu tối thiểu")
+        st.info("Có thể chạy chatbot nhưng hiệu suất có thể chậm")
+    else:
+        st.error("🔴 Hệ thống không đạt yêu cầu tối thiểu")
+        st.warning("Cần nâng cấp phần cứng để chạy chatbot hiệu quả")
+        
+        # Specific recommendations
+        st.write("**Khuyến nghị nâng cấp:**")
+        current_cpu = current_system.get("cpu_cores", 0)
+        current_memory = current_system.get("memory_gb", 0)
+        
+        if current_cpu < 2:
+            st.write("- Nâng cấp CPU lên ít nhất 2 cores")
+        if current_memory < 4:
+            st.write("- Nâng cấp RAM lên ít nhất 4GB")
+        if not current_system.get("gpu_available", False):
+            st.write("- Cân nhắc thêm GPU để tăng tốc độ xử lý")
+
+
 def create_system_summary(system_data):
     """Create system summary with recommendations."""
     st.subheader("📊 Tóm tắt Hệ thống & Khuyến nghị")
@@ -337,6 +642,22 @@ def main():
 
     st.title("🔧 Trạng thái Hệ thống & Cấu hình")
     st.markdown("Giám sát trạng thái hệ thống và thông tin cấu hình các tầng")
+    
+    # Add refresh button for dataset cache
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("💡 **Lưu ý:** Dữ liệu dataset được cache trong 5 phút để tối ưu hiệu suất")
+    with col2:
+        if st.button("🔄 Refresh Dataset Cache", help="Xóa cache và tải lại thông tin dataset"):
+            try:
+                from core.utils.system_check import clear_dataset_status_cache
+                if clear_dataset_status_cache():
+                    st.success("✅ Cache đã được xóa, đang tải lại dữ liệu...")
+                    st.rerun()
+                else:
+                    st.error("❌ Không thể xóa cache")
+            except Exception as e:
+                st.error(f"❌ Lỗi khi xóa cache: {e}")
 
     # Load system data
     with st.spinner("🔄 Đang tải thông tin hệ thống..."):
@@ -347,6 +668,8 @@ def main():
         create_system_health_dashboard(system_data)
         create_tier_configuration_info(system_data)
         create_faiss_index_status(system_data)
+        create_dataset_status_display(system_data)
+        create_hardware_requirements_display(system_data)
         create_system_summary(system_data)
 
         # Debug section (collapsible)

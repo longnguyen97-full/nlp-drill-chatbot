@@ -304,6 +304,332 @@ def get_missing_models() -> List[str]:
     ]
 
 
+def get_dataset_status() -> Dict[str, Any]:
+    """Get comprehensive dataset information and statistics with intelligent counting and caching."""
+    try:
+        # Import json module
+        import json
+        
+        # Check if we have cached data (cache for 5 minutes)
+        cache_file = Path("logs/dataset_status_cache.json")
+        if cache_file.exists():
+            import time
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < 300:  # 5 minutes cache
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        cached_data = json.load(f)
+                        logger.info("Using cached dataset status")
+                        return cached_data
+                except Exception as e:
+                    logger.warning(f"Failed to read cache: {e}")
+        
+        dataset_info = {
+            "raw_data": {},
+            "processed_data": {},
+            "validation_sets": {},
+            "overall_stats": {},
+            "cached_at": __import__("datetime").datetime.now().isoformat()
+        }
+        
+        # Check raw data with intelligent counting
+        raw_data_dir = Path("data/raw")
+        if raw_data_dir.exists():
+            raw_files = list(raw_data_dir.glob("*.json"))
+            dataset_info["raw_data"] = {
+                "exists": True,
+                "file_count": len(raw_files),
+                "files": {},
+                "total_articles": 0,
+                "total_questions": 0
+            }
+            
+            for file_path in raw_files:
+                try:
+                    file_size = file_path.stat().st_size / (1024 * 1024)  # MB
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        
+                        # Intelligent counting based on file structure
+                        if isinstance(data, list):
+                            record_count = len(data)
+                            
+                            # Special handling for legal_corpus.json
+                            if file_path.name == "legal_corpus.json":
+                                # Count total articles across all laws
+                                total_articles = 0
+                                for law_item in data:
+                                    if isinstance(law_item, dict) and "content" in law_item:
+                                        total_articles += len(law_item["content"])
+                                dataset_info["raw_data"]["total_articles"] = total_articles
+                                record_count = total_articles  # Use total articles count
+                            
+                            # Special handling for train.json and public_test.json
+                            elif file_path.name in ["train.json", "public_test.json"]:
+                                dataset_info["raw_data"]["total_questions"] += record_count
+                            
+                        elif isinstance(data, dict):
+                            if "content" in data:
+                                record_count = len(data["content"])
+                            else:
+                                record_count = 1
+                        else:
+                            record_count = 0
+                            
+                        dataset_info["raw_data"]["files"][file_path.name] = {
+                            "size_mb": round(file_size, 2),
+                            "record_count": record_count,
+                            "path": str(file_path),
+                            "data_type": "list" if isinstance(data, list) else "dict" if isinstance(data, dict) else "unknown"
+                        }
+                        
+                        # Add specific metadata for known file types
+                        if file_path.name == "legal_corpus.json":
+                            dataset_info["raw_data"]["files"][file_path.name]["law_count"] = len(data)
+                            dataset_info["raw_data"]["files"][file_path.name]["article_count"] = record_count
+                        elif file_path.name == "train.json":
+                            dataset_info["raw_data"]["files"][file_path.name]["question_count"] = record_count
+                        elif file_path.name == "public_test.json":
+                            dataset_info["raw_data"]["files"][file_path.name]["question_count"] = record_count
+                            
+                except Exception as e:
+                    logger.warning(f"Could not read {file_path}: {e}")
+                    dataset_info["raw_data"]["files"][file_path.name] = {
+                        "size_mb": 0,
+                        "record_count": 0,
+                        "path": str(file_path),
+                        "error": str(e)
+                    }
+        
+        # Check processed data
+        features_dir = Path("features")
+        if features_dir.exists():
+            # Find latest processed data directory
+            processed_dirs = [
+                d for d in features_dir.iterdir() 
+                if d.is_dir() and d.name.startswith("processed_data_")
+            ]
+            
+            if processed_dirs:
+                latest_dir = max(processed_dirs, key=lambda p: p.stat().st_mtime)
+                dataset_info["processed_data"] = {
+                    "exists": True,
+                    "latest_directory": latest_dir.name,
+                    "files": {}
+                }
+                
+                # Check metadata.json first
+                metadata_path = latest_dir / "metadata.json"
+                if metadata_path.exists():
+                    try:
+                        with open(metadata_path, "r", encoding="utf-8") as f:
+                            metadata = json.load(f)
+                            dataset_info["processed_data"]["metadata"] = metadata
+                    except Exception as e:
+                        logger.warning(f"Could not read metadata: {e}")
+                
+                # Check individual files
+                for file_path in latest_dir.glob("*.jsonl"):
+                    try:
+                        file_size = file_path.stat().st_size / (1024 * 1024)  # MB
+                        # Count lines for JSONL files
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            line_count = sum(1 for _ in f)
+                        
+                        dataset_info["processed_data"]["files"][file_path.name] = {
+                            "size_mb": round(file_size, 2),
+                            "record_count": line_count,
+                            "path": str(file_path)
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not read {file_path}: {e}")
+        
+        # Check validation sets
+        validation_dir = features_dir / "validation_sets"
+        if validation_dir.exists():
+            validation_files = list(validation_dir.glob("*.jsonl"))
+            dataset_info["validation_sets"] = {
+                "exists": True,
+                "file_count": len(validation_files),
+                "files": {}
+            }
+            
+            for file_path in validation_files:
+                try:
+                    file_size = file_path.stat().st_size / (1024 * 1024)  # MB
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        line_count = sum(1 for _ in f)
+                    
+                    dataset_info["validation_sets"]["files"][file_path.name] = {
+                        "size_mb": round(file_size, 2),
+                        "record_count": line_count,
+                        "path": str(file_path)
+                    }
+                except Exception as e:
+                    logger.warning(f"Could not read {file_path}: {e}")
+        
+        # Calculate overall stats with detailed breakdown
+        total_files = (
+            dataset_info["raw_data"].get("file_count", 0) +
+            len(dataset_info["processed_data"].get("files", {})) +
+            dataset_info["validation_sets"].get("file_count", 0)
+        )
+        
+        total_size = sum(
+            file_info["size_mb"] 
+            for file_info in dataset_info["raw_data"].get("files", {}).values()
+        ) + sum(
+            file_info["size_mb"] 
+            for file_info in dataset_info["processed_data"].get("files", {}).values()
+        ) + sum(
+            file_info["size_mb"] 
+            for file_info in dataset_info["validation_sets"].get("files", {}).values()
+        )
+        
+        # Calculate total records across all data types
+        total_raw_records = sum(
+            file_info["record_count"] 
+            for file_info in dataset_info["raw_data"].get("files", {}).values()
+            if "error" not in file_info
+        )
+        
+        total_processed_records = sum(
+            file_info["record_count"] 
+            for file_info in dataset_info["processed_data"].get("files", {}).values()
+        )
+        
+        total_validation_records = sum(
+            file_info["record_count"] 
+            for file_info in dataset_info["validation_sets"].get("files", {}).values()
+        )
+        
+        dataset_info["overall_stats"] = {
+            "total_files": total_files,
+            "total_size_mb": round(total_size, 2),
+            "total_raw_records": total_raw_records,
+            "total_processed_records": total_processed_records,
+            "total_validation_records": total_validation_records,
+            "total_all_records": total_raw_records + total_processed_records + total_validation_records,
+            "data_available": total_files > 0
+        }
+        
+        # Cache the results
+        try:
+            cache_file.parent.mkdir(exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(dataset_info, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"Failed to cache dataset status: {e}")
+        
+        return dataset_info
+        
+    except Exception as e:
+        logger.error(f"Error getting dataset status: {e}")
+        return {
+            "error": str(e),
+            "raw_data": {"exists": False},
+            "processed_data": {"exists": False},
+            "validation_sets": {"exists": False},
+            "overall_stats": {"total_files": 0, "total_size_mb": 0, "data_available": False}
+        }
+
+
+def clear_dataset_status_cache() -> bool:
+    """Clear the dataset status cache to force refresh."""
+    try:
+        cache_file = Path("logs/dataset_status_cache.json")
+        if cache_file.exists():
+            cache_file.unlink()
+            logger.info("Dataset status cache cleared")
+            return True
+        else:
+            logger.info("No dataset status cache to clear")
+            return True
+    except Exception as e:
+        logger.error(f"Failed to clear dataset status cache: {e}")
+        return False
+
+
+def get_hardware_requirements() -> Dict[str, Any]:
+    """Get hardware requirements and recommendations for the chatbot application."""
+    requirements = {
+        "minimum": {
+            "cpu_cores": 2,
+            "memory_gb": 4,
+            "storage_gb": 10,
+            "gpu": "Optional (CPU mode supported)"
+        },
+        "recommended": {
+            "cpu_cores": 4,
+            "memory_gb": 8,
+            "storage_gb": 20,
+            "gpu": "NVIDIA GPU with 4GB+ VRAM"
+        },
+        "optimal": {
+            "cpu_cores": 8,
+            "memory_gb": 16,
+            "storage_gb": 50,
+            "gpu": "NVIDIA GPU with 8GB+ VRAM"
+        },
+        "current_system": {},
+        "compatibility": {}
+    }
+    
+    try:
+        # Get current system info
+        device_info = get_device_info()
+        requirements["current_system"] = {
+            "cpu_cores": device_info["hardware"]["cpu_count"],
+            "memory_gb": device_info["hardware"]["memory_total_gb"],
+            "gpu_available": device_info["gpu"]["cuda_available"],
+            "gpu_count": device_info["gpu"]["gpu_count"],
+            "gpu_names": device_info["gpu"]["gpu_names"]
+        }
+        
+        # Check compatibility
+        current_cpu = device_info["hardware"]["cpu_count"]
+        current_memory = device_info["hardware"]["memory_total_gb"]
+        current_gpu = device_info["gpu"]["cuda_available"]
+        
+        requirements["compatibility"] = {
+            "meets_minimum": (
+                current_cpu >= requirements["minimum"]["cpu_cores"] and
+                current_memory >= requirements["minimum"]["memory_gb"]
+            ),
+            "meets_recommended": (
+                current_cpu >= requirements["recommended"]["cpu_cores"] and
+                current_memory >= requirements["recommended"]["memory_gb"]
+            ),
+            "meets_optimal": (
+                current_cpu >= requirements["optimal"]["cpu_cores"] and
+                current_memory >= requirements["optimal"]["memory_gb"] and
+                current_gpu
+            ),
+            "performance_level": "minimum"
+        }
+        
+        # Determine performance level
+        if requirements["compatibility"]["meets_optimal"]:
+            requirements["compatibility"]["performance_level"] = "optimal"
+        elif requirements["compatibility"]["meets_recommended"]:
+            requirements["compatibility"]["performance_level"] = "recommended"
+        elif requirements["compatibility"]["meets_minimum"]:
+            requirements["compatibility"]["performance_level"] = "minimum"
+        else:
+            requirements["compatibility"]["performance_level"] = "below_minimum"
+        
+        return requirements
+        
+    except Exception as e:
+        logger.error(f"Error getting hardware requirements: {e}")
+        return {
+            "error": str(e),
+            "minimum": requirements["minimum"],
+            "recommended": requirements["recommended"],
+            "optimal": requirements["optimal"]
+        }
+
+
 def validate_system_requirements() -> Dict[str, Any]:
     """Validate if the system meets minimum requirements."""
     device_info = get_device_info()

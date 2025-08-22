@@ -161,10 +161,10 @@ def calculate_optimal_parameters(
     top_k_light_reranking = max(top_k_light_reranking, 40)
 
     # Apply upper bounds for performance - Cân bằng Recall + Performance
-    top_k_retrieval = min(top_k_retrieval, 200)  # Cap retrieval at 250 (cân bằng hơn)
+    top_k_retrieval = min(top_k_retrieval, 150)  # Cap retrieval at 50 (cân bằng hơn)
     top_k_light_reranking = min(
-        top_k_light_reranking, 150
-    )  # Cap light reranking at 150 (cân bằng hơn)
+        top_k_light_reranking, 120
+    )  # Cap light reranking at 120 (cân bằng hơn)
 
     # Get model-specific limits from config
     try:

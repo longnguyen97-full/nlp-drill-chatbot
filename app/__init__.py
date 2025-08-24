@@ -1,26 +1,11 @@
 #!/usr/bin/env python3
 """
-LawBot Application Module - LawBot v8.1
-=======================================
+LawBot Application Package
+=========================
 
-Main application module for LawBot with comprehensive system monitoring,
-evaluation display, and legal QA capabilities.
-
-Features:
-- Interactive legal question answering
-- Comprehensive system health monitoring
-- Real-time evaluation results display
-- Performance metrics visualization
-- Multi-tier pipeline status tracking
+Main application package for LawBot.
 """
 
-__version__ = "8.1.0"
+__version__ = "8.3"
 __author__ = "LawBot Team"
-__description__ = "Comprehensive Legal QA System with Advanced Monitoring"
-
-# Import main app components
-from .app import main
-
-__all__ = [
-    "main",
-]
+__description__ = "Hệ thống Hỏi-Đáp Pháp luật thông minh"

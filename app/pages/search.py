@@ -9,6 +9,7 @@ Optimized search functionality with 3-tier architecture support.
 import os
 import json
 import time
+from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
 
@@ -222,7 +223,7 @@ def display_performance_metrics(start_time: float, end_time: float, result_count
 # Function removed - no longer needed with simple expander approach
 
 
-def display_search_result(result: Dict[str, Any], result_index: int):
+def display_search_result(result: Dict[str, Any], result_index: int, query: str, pipeline):
     """Display a single search result with enhanced styling and visual hierarchy."""
 
     # Simple result header
@@ -233,7 +234,7 @@ def display_search_result(result: Dict[str, Any], result_index: int):
     if result.get("parent_law_name"):
         st.markdown(f"**Tên điều luật:** {result['parent_law_name']}")
 
-        # Enhanced content section with better formatting and professional styling - Streamlit optimized
+    # Enhanced content section with better formatting and professional styling - Streamlit optimized
     content_text = result["content"]
 
     # Improved content formatting with better structure and no extra spacing
@@ -274,6 +275,8 @@ def display_search_result(result: Dict[str, Any], result_index: int):
 
             # Simple score display
             st.markdown(f"**{display_name}{performance_indicator}:** {score_value:.3f}")
+
+    # Feedback section removed - system simplified for stability
 
 
 def main():
@@ -328,38 +331,55 @@ def main():
     pipeline = load_pipeline()
 
     if pipeline and pipeline.is_ready:
-        # Sidebar configuration
+        # Sidebar configuration - optimized to prevent unnecessary reruns
         with st.sidebar:
             st.header("⚙️ Cấu hình tìm kiếm")
 
-            # Search parameters
-            final_results_count = st.slider(
-                "Số kết quả cuối cùng:",
-                min_value=1,
-                max_value=20,
-                value=5,
-                help="Số kết quả cuối cùng sẽ hiển thị",
-            )
+            # Use form to prevent auto-rerun on parameter changes
+            with st.form("search_config_form", clear_on_submit=False):
+                # Search parameters
+                final_results_count = st.slider(
+                    "Số kết quả cuối cùng:",
+                    min_value=1,
+                    max_value=20,
+                    value=st.session_state.get("final_results_count", 5),
+                    help="Số kết quả cuối cùng sẽ hiển thị",
+                    key="final_results_slider",
+                )
 
-            search_aggressiveness = st.selectbox(
-                "Mức độ tìm kiếm:",
-                ["Balanced", "Conservative", "Aggressive"],
-                help="Conservative: Ít kết quả, độ chính xác cao. Aggressive: Nhiều kết quả, độ bao phủ cao",
-            )
+                search_aggressiveness = st.selectbox(
+                    "Mức độ tìm kiếm:",
+                    ["Balanced", "Conservative", "Aggressive"],
+                    index=["Balanced", "Conservative", "Aggressive"].index(
+                        st.session_state.get("search_aggressiveness", "Balanced")
+                    ),
+                    help="Conservative: Ít kết quả, độ chính xác cao. Aggressive: Nhiều kết quả, độ bao phủ cao",
+                    key="aggressiveness_select",
+                )
 
-            # Force CPU option
-            force_cpu = st.checkbox(
-                "🖥️ Force CPU Mode",
-                help="Bắt buộc sử dụng CPU thay vì GPU (hữu ích khi gặp lỗi CUDA)",
-            )
+                # Force CPU option
+                force_cpu = st.checkbox(
+                    "🖥️ Force CPU Mode",
+                    value=st.session_state.get("force_cpu", False),
+                    help="Bắt buộc sử dụng CPU thay vì GPU (hữu ích khi gặp lỗi CUDA)",
+                    key="force_cpu_checkbox",
+                )
 
+                # Apply configuration button
+                if st.form_submit_button("✅ Áp dụng cấu hình"):
+                    st.session_state.final_results_count = final_results_count
+                    st.session_state.search_aggressiveness = search_aggressiveness
+                    st.session_state.force_cpu = force_cpu
+                    st.success("✅ Cấu hình đã được áp dụng!")
+
+            # Display current configuration
             if force_cpu:
                 st.warning("⚠️ CPU mode được kích hoạt. Hiệu suất có thể chậm hơn.")
 
             # Reload pipeline button
             if st.button("🔄 Reload Pipeline"):
                 st.cache_resource.clear()
-                st.rerun()
+                st.success("✅ Cache đã được xóa!")
 
             # Model versions display
             with st.sidebar.expander("📦 Phiên bản Models đang chạy", expanded=False):
@@ -371,184 +391,199 @@ def main():
                 else:
                     st.text("Không thể xác định phiên bản.")
 
-        # Initialize current question in session state if not exists
-        if "current_question" not in st.session_state:
+        # Initialize session state efficiently (only once)
+        if "search_page_initialized" not in st.session_state:
+            st.session_state.search_page_initialized = True
             st.session_state.current_question = (
                 "Người lao động được nghỉ phép bao nhiêu ngày?"
             )
+            st.session_state.searching = False
+            st.session_state.last_query = ""
+            st.session_state.results_cache = {}
+            st.session_state.search_params_cache = {}
 
         # Main search interface with professional styling
         with st.container():
             st.markdown("### 🔍 Nhập câu hỏi")
 
-            # Random question button in sidebar
+            # Random question button in sidebar - optimized to prevent rerun
             with st.sidebar:
                 st.markdown("---")
                 st.markdown("### 🎲 Câu hỏi mẫu")
-                if st.button(
-                    "🎲 Lấy câu hỏi ngẫu nhiên",
-                    help="Lấy câu hỏi ngẫu nhiên từ dataset",
-                    use_container_width=True,
-                ):
-                    try:
-                        training_questions, test_questions = load_random_questions()
-                        all_questions = training_questions + test_questions
-                        if all_questions:
-                            random_question = random.choice(all_questions)
-                            st.session_state.current_question = random_question
-                            st.rerun()
-                        else:
-                            st.warning("Không có câu hỏi mẫu")
-                    except Exception as e:
-                        st.error(f"Lỗi khi load câu hỏi ngẫu nhiên: {e}")
+                
+                # Use form to prevent auto-rerun
+                with st.form("random_question_form", clear_on_submit=False):
+                    if st.form_submit_button(
+                        "🎲 Lấy câu hỏi ngẫu nhiên",
+                        help="Lấy câu hỏi ngẫu nhiên từ dataset",
+                        use_container_width=True,
+                    ):
+                        try:
+                            training_questions, test_questions = load_random_questions()
+                            all_questions = training_questions + test_questions
+                            if all_questions:
+                                random_question = random.choice(all_questions)
+                                st.session_state.current_question = random_question
+                                st.session_state.last_query = random_question
+                                st.success(f"✅ Đã chọn câu hỏi: {random_question[:50]}...")
+                            else:
+                                st.warning("Không có câu hỏi mẫu")
+                        except Exception as e:
+                            st.error(f"Lỗi khi load câu hỏi ngẫu nhiên: {e}")
 
-            # Search input - simple styling
+            # Search input - optimized to prevent unnecessary reruns
             query = st.text_input(
                 "Nhập câu hỏi của bạn:",
                 value=st.session_state.current_question,
                 help="Nhập câu hỏi về pháp luật hoặc sử dụng tính năng câu hỏi ngẫu nhiên",
                 key="query_input",
                 placeholder="Ví dụ: Người lao động được nghỉ phép bao nhiêu ngày?",
+                on_change=lambda: None,  # Prevent auto-rerun
             )
 
-        # Update current question when user types something new
-        if query != st.session_state.current_question:
+        # Update current question only when form is submitted
+        if query and query != st.session_state.last_query:
             st.session_state.current_question = query
 
-        # Initialize searching state
-        if "searching" not in st.session_state:
-            st.session_state.searching = False
+        # Searching state is already initialized above
 
-        # Search button with disabled state while processing
-        search_clicked = st.button(
-            "🔍 Tìm kiếm", type="primary", disabled=st.session_state.searching
-        )
+        # Search button - optimized to prevent unnecessary reruns
+        with st.form("search_form", clear_on_submit=False):
+            search_clicked = st.form_submit_button(
+                "🔍 Tìm kiếm", type="primary", disabled=st.session_state.searching
+            )
 
-        if search_clicked and not st.session_state.searching:
-            if query:
-                st.session_state.searching = True
-                logger.info(f"Processing query: {query[:100]}...")
-                try:
-                    # Calculate optimal parameters
-                    params = calculate_optimal_parameters(
-                        final_results_count, search_aggressiveness
-                    )
-                    logger.info(f"Search parameters: {params}")
-
-                    # Display calculated parameters
-                    with st.expander("📊 Thông số tìm kiếm được tính toán tự động"):
-                        st.markdown(
-                            f"**🎯 Tầng 1 - Retrieval:** {params['top_k_retrieval']} ứng viên"
+            if search_clicked and not st.session_state.searching:
+                if query:
+                    st.session_state.searching = True
+                    st.session_state.last_query = query
+                    logger.info(f"Processing query: {query[:100]}...")
+                    try:
+                        # Get parameters from session state or use defaults
+                        final_results_count = st.session_state.get("final_results_count", 5)
+                        search_aggressiveness = st.session_state.get("search_aggressiveness", "Balanced")
+                        
+                        # Calculate optimal parameters
+                        params = calculate_optimal_parameters(
+                            final_results_count, search_aggressiveness
                         )
-                        st.markdown(
-                            f"**⚡ Tầng 2 - Light Reranking:** {params['top_k_light_reranking']} ứng viên"
-                        )
-                        st.markdown(
-                            f"**🎯 Tầng 3 - Final Reranking:** {params['top_k_final']} kết quả cuối cùng"
-                        )
-                        st.markdown(f"**⚙️ Mức độ tìm kiếm:** {search_aggressiveness}")
+                        logger.info(f"Search parameters: {params}")
 
-                    # Performance monitoring
-                    start_time = time.time()
-                    with st.spinner("🔎 Đang tìm kiếm... vui lòng đợi"):
-                        # Get results from pipeline with all calculated parameters
-                        results = pipeline.predict(
-                            query,
-                            top_k_retrieval=params["top_k_retrieval"],
-                            top_k_light=params[
-                                "top_k_light_reranking"
-                            ],  # ✅ Pass light reranking parameter
-                            top_k_final=params["top_k_final"],
-                        )
-                    end_time = time.time()
-
-                    processing_time = end_time - start_time
-                    logger.info(
-                        f"Query processed in {processing_time:.2f}s, found {len(results) if results else 0} results"
-                    )
-
-                    if results:
-                        # Display performance metrics - simple styling
-                        display_performance_metrics(start_time, end_time, len(results))
-
-                        # Display results in tabs
-                        tab1, tab2 = st.tabs(["📄 Xem chi tiết", "📊 So sánh điểm số"])
-
-                        with tab1:
-                            st.success(f"✅ Tìm thấy {len(results)} kết quả phù hợp!")
-
-                            # Results summary - simple styling
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric(
-                                    "🎯 Kết quả cao nhất",
-                                    f"{results[0]['final_score']:.3f}",
-                                )
-                            with col2:
-                                st.metric(
-                                    "📊 Điểm trung bình",
-                                    f"{sum(r['final_score'] for r in results)/len(results):.3f}",
-                                )
-                            with col3:
-                                st.metric("🔍 Tổng kết quả", len(results))
-
-                            # Display each result with styled scores
-                            for i, result in enumerate(results, 1):
-                                with st.expander(
-                                    f"#{i} - {result['aid']} (Điểm: {result['final_score']:.3f})",
-                                    expanded=(i <= 3),
-                                ):
-                                    display_search_result(result, i)
-
-                        with tab2:
-                            # Score comparison chart using centralized configuration
-                            scores_data = {
-                                "Kết quả": [f"#{i+1}" for i in range(len(results))],
-                            }
-
-                            # Add scores for each model type
-                            for model_key in get_all_model_keys():
-                                score_field = get_score_field_name(model_key)
-                                display_name = get_display_name(model_key)
-                                scores_data[display_name] = [
-                                    r.get(score_field, 0.0) for r in results
-                                ]
-
-                            df_scores = pd.DataFrame(scores_data)
-
-                            # Display metrics for the primary score (light reranker)
-                            light_rerank_scores = scores_data.get(
-                                "Điểm light rerank", []
+                        # Display calculated parameters
+                        with st.expander("📊 Thông số tìm kiếm được tính toán tự động"):
+                            st.markdown(
+                                f"**🎯 Tầng 1 - Retrieval:** {params['top_k_retrieval']} ứng viên"
                             )
-                            if light_rerank_scores:
+                            st.markdown(
+                                f"**⚡ Tầng 2 - Light Reranking:** {params['top_k_light_reranking']} ứng viên"
+                            )
+                            st.markdown(
+                                f"**🎯 Tầng 3 - Final Reranking:** {params['top_k_final']} kết quả cuối cùng"
+                            )
+                            st.markdown(f"**⚙️ Mức độ tìm kiếm:** {search_aggressiveness}")
+
+                        # Performance monitoring
+                        start_time = time.time()
+                        with st.spinner("🔎 Đang tìm kiếm... vui lòng đợi"):
+                            # Get results from pipeline with calculated parameters
+                            results = pipeline.predict(
+                                query,
+                                top_k=params["top_k_final"],  # ✅ Use top_k parameter
+                            )
+                        end_time = time.time()
+
+                        processing_time = end_time - start_time
+                        logger.info(
+                            f"Query processed in {processing_time:.2f}s, found {len(results) if results else 0} results"
+                        )
+
+                        if results:
+                            # Display performance metrics - simple styling
+                            display_performance_metrics(start_time, end_time, len(results))
+
+                            # Results display section
+                            st.markdown("---")
+                            st.markdown("### 📊 Kết quả tìm kiếm")
+                            st.info("Hiển thị kết quả tìm kiếm với thông tin chi tiết")
+
+                            # Display results in tabs
+                            tab1, tab2 = st.tabs(["📄 Xem chi tiết", "📊 So sánh điểm số"])
+
+                            with tab1:
+                                st.success(f"✅ Tìm thấy {len(results)} kết quả phù hợp!")
+
+                                # Results summary - simple styling
                                 col1, col2, col3 = st.columns(3)
                                 with col1:
                                     st.metric(
-                                        "Điểm cao nhất",
-                                        f"{max(light_rerank_scores):.3f}",
+                                        "🎯 Kết quả cao nhất",
+                                        f"{results[0]['final_score']:.3f}",
                                     )
                                 with col2:
                                     st.metric(
-                                        "Điểm thấp nhất",
-                                        f"{min(light_rerank_scores):.3f}",
+                                        "📊 Điểm trung bình",
+                                        f"{sum(r['final_score'] for r in results)/len(results):.3f}",
                                     )
                                 with col3:
-                                    st.metric(
-                                        "Điểm trung bình",
-                                        f"{sum(light_rerank_scores)/len(light_rerank_scores):.3f}",
-                                    )
+                                    st.metric("🔍 Tổng kết quả", len(results))
 
-                            # Chart
-                            st.bar_chart(df_scores.set_index("Kết quả"))
-                    else:
-                        st.warning(
-                            "❌ Không tìm thấy kết quả phù hợp. Hãy thử câu hỏi khác."
-                        )
-                except Exception as e:
-                    st.error(f"❌ Lỗi khi tìm kiếm: {str(e)}")
-                    st.info("💡 Gợi ý: Thử giảm số lượng kết quả hoặc sử dụng CPU mode")
-                finally:
-                    st.session_state.searching = False
+                                # Display each result with styled scores
+                                for i, result in enumerate(results, 1):
+                                    with st.expander(
+                                        f"#{i} - {result['aid']} (Điểm: {result['final_score']:.3f})",
+                                        expanded=(i <= 3),
+                                    ):
+                                        display_search_result(result, i, query, pipeline)
+
+                            with tab2:
+                                # Score comparison chart using centralized configuration
+                                scores_data = {
+                                    "Kết quả": [f"#{i+1}" for i in range(len(results))],
+                                }
+
+                                # Add scores for each model type
+                                for model_key in get_all_model_keys():
+                                    score_field = get_score_field_name(model_key)
+                                    display_name = get_display_name(model_key)
+                                    scores_data[display_name] = [
+                                        r.get(score_field, 0.0) for r in results
+                                    ]
+
+                                df_scores = pd.DataFrame(scores_data)
+
+                                # Display metrics for the primary score (light reranker)
+                                light_rerank_scores = scores_data.get(
+                                    "Điểm light rerank", []
+                                )
+                                if light_rerank_scores:
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric(
+                                            "Điểm cao nhất",
+                                            f"{max(light_rerank_scores):.3f}",
+                                        )
+                                    with col2:
+                                        st.metric(
+                                            "Điểm thấp nhất",
+                                            f"{min(light_rerank_scores):.3f}",
+                                        )
+                                    with col3:
+                                        st.metric(
+                                            "Điểm trung bình",
+                                            f"{sum(light_rerank_scores)/len(light_rerank_scores):.3f}",
+                                        )
+
+                                # Chart
+                                st.bar_chart(df_scores.set_index("Kết quả"))
+                        else:
+                            st.warning(
+                                "❌ Không tìm thấy kết quả phù hợp. Hãy thử câu hỏi khác."
+                            )
+                    except Exception as e:
+                        st.error(f"❌ Lỗi khi tìm kiếm: {str(e)}")
+                        st.info("💡 Gợi ý: Thử giảm số lượng kết quả hoặc sử dụng CPU mode")
+                    finally:
+                        st.session_state.searching = False
     else:
         st.error("❌ Không thể tải pipeline. Vui lòng kiểm tra lại hệ thống.")
 

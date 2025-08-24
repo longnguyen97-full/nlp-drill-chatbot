@@ -32,6 +32,7 @@ try:
     from core.utils.versioning import generate_versioned_path, save_metadata
     from core.utils.io import load_jsonl, save_json
     from core.utils.system_check import get_device_info
+    from training.training_evaluator import training_evaluator
 except ImportError as e:
     print(f"Import error: {e}")
     sys.exit(1)
@@ -965,6 +966,10 @@ def main():
         logger.info("🎯 Starting Enhanced Bi-Encoder Training (Tier 1: Retrieval)")
         logger.info("🔍 Using Contrastive Learning + ADAPT + HPO + HNM techniques...")
 
+        # Start training evaluation session
+        session_id = training_evaluator.start_training_session("bi_encoder", "retrieval")
+        logger.info(f"📊 Training evaluation session started: {session_id}")
+
         # Check data availability
         data_path = find_latest_data_path(config.paths.feature_dir)
         logger.info(f"📁 Using data from: {data_path}")
@@ -974,6 +979,17 @@ def main():
 
         # Train model with Contrastive Learning + ADAPT + HPO
         model_dir = trainer.train_model()
+
+        # Final training evaluation
+        try:
+            training_summary = training_evaluator.get_training_summary()
+            logger.info(f"📊 Training Summary: {training_summary}")
+            
+            # Export training report
+            training_evaluator.export_training_report()
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Training evaluation failed: {e}")
 
         # Save completion report
         completion_report = {
@@ -992,6 +1008,7 @@ def main():
                 "hpo": "Hyperparameter optimization with Optuna",
                 "hnm": "Hard Negative Mining for improved training data quality",
             },
+            "training_evaluation": training_summary if 'training_summary' in locals() else None,
         }
 
         # Save to reports directory
@@ -1006,6 +1023,12 @@ def main():
 
         logger.info(f"📋 Training report saved to: {report_path}")
         logger.info("✅ Enhanced Bi-Encoder training completed successfully!")
+
+        # Cleanup training evaluator
+        try:
+            training_evaluator.cleanup()
+        except Exception as e:
+            logger.warning(f"⚠️ Training evaluator cleanup failed: {e}")
 
         return True
 

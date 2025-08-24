@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """
-LawBot Pages Module
-==================
+LawBot Pages Package
+====================
 
-This module contains all the page components for the LawBot application.
-Each page is designed to be modular, maintainable, and optimized.
+Page modules for LawBot application.
 """
 
-# Import and export all page modules
-from . import search
-from . import analysis
-from . import system
+__version__ = "8.3"
+__description__ = "Page modules for LawBot application"
 
-__all__ = ["search", "analysis", "system"]
+# Import page modules
+try:
+    from . import search
+    from . import analysis
+    from . import system
+except ImportError:
+    # Allow partial imports for development
+    pass
+
+__all__ = [
+    "search",
+    "analysis", 
+    "system"
+]

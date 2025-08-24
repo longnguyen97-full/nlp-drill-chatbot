@@ -31,13 +31,60 @@ except ImportError as e:
 logger = get_logger(__name__)
 
 
+def _safe_move_to_device(model, device):
+    """Safely move model to device, handling meta tensors and offloaded models."""
+    try:
+        # Check if model has offloaded modules
+        if hasattr(model, 'hf_device_map') and model.hf_device_map:
+            logger.info(f"Model has offloaded modules, skipping device movement to {device}")
+            return model
+        
+        # Try to move model safely
+        model.to(device)
+    except NotImplementedError as e:
+        if "meta tensor" in str(e).lower():
+            logger.info(f"Detected meta tensor, using to_empty() for device: {device}")
+            model.to_empty(device=device)
+        else:
+            raise
+    except RuntimeError as e:
+        if "offloaded" in str(e) or "dispatched" in str(e):
+            logger.info(f"Model is offloaded/dispatched, skipping device movement to {device}: {e}")
+        else:
+            raise
+    return model
+
+
 def _load_model(
     model_path: str, tokenizer_path: str, model_class, tokenizer_class, **kwargs
 ) -> Tuple[Any, Any]:
     """A general-purpose model and tokenizer loader."""
     try:
         tokenizer = tokenizer_class.from_pretrained(tokenizer_path)
+        
+        # Do not add device_map to avoid meta tensor issues
+        # Models will be moved to device manually after loading
+            
         model = model_class.from_pretrained(model_path, **kwargs)
+        
+        # Handle meta tensors and offloaded models safely after loading
+        if torch.cuda.is_available():
+            try:
+                # Check if model has offloaded modules
+                if hasattr(model, 'hf_device_map') and model.hf_device_map:
+                    logger.info("Model has offloaded modules, skipping device movement")
+                else:
+                    model.to("cuda")
+            except NotImplementedError:
+                # Handle meta tensors with to_empty()
+                model.to_empty(device="cuda")
+                logger.info("Used to_empty() for meta tensor handling")
+            except RuntimeError as e:
+                if "offloaded" in str(e) or "dispatched" in str(e):
+                    logger.info(f"Model is offloaded/dispatched, skipping device movement: {e}")
+                else:
+                    logger.warning(f"Could not move model to cuda: {e}")
+        
         model.eval()
         logger.info(f"Successfully loaded model from {model_path}")
         return model, tokenizer
@@ -73,12 +120,12 @@ def _load_ensemble_model(model_path: str) -> Tuple[Any, Any]:
             )
             return None, None
 
-        # Load ADAPT model
+        # Load ADAPT model without device_map to avoid meta tensor issues
         adapt_model = AutoModelForSequenceClassification.from_pretrained(
             str(adapt_model_path)
         )
 
-        # Load base model
+        # Load base model without device_map to avoid meta tensor issues
         base_model = AutoModelForSequenceClassification.from_pretrained(
             str(base_model_path)
         )
@@ -95,9 +142,49 @@ def _load_ensemble_model(model_path: str) -> Tuple[Any, Any]:
                 self.base_weight = base_weight
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-                # Move models to device
-                self.adapt_model.to(self.device)
-                self.base_model.to(self.device)
+                # Check if models are already on correct device or offloaded
+                def safe_move_to_device(model, target_device):
+                    try:
+                        # Check if model is already on target device
+                        if hasattr(model, 'device'):
+                            current_device = str(model.device)
+                            if target_device in current_device:
+                                logger.info(f"Model already on {target_device}")
+                                return
+                        
+                        # Check if model has offloaded modules
+                        if hasattr(model, 'hf_device_map') and model.hf_device_map:
+                            logger.info(f"Model has offloaded modules, skipping device movement")
+                            return
+                        
+                        # Try to move model safely
+                        model.to(target_device)
+                    except NotImplementedError as nie:
+                        if "meta tensor" in str(nie):
+                            logger.warning(f"⚠️ Meta tensor error during device movement: {nie}")
+                            logger.info("🔄 Attempting alternative device movement method...")
+                            try:
+                                # Try using to_empty() method
+                                model.to_empty(device=target_device)
+                                logger.info("✅ Successfully moved model using to_empty()")
+                            except Exception as to_empty_error:
+                                logger.warning(f"⚠️ to_empty() method also failed: {to_empty_error}")
+                                logger.info("ℹ️ Keeping model on current device")
+                        else:
+                            logger.warning(f"⚠️ NotImplementedError during device movement: {nie}")
+                    except RuntimeError as e:
+                        if "offloaded" in str(e) or "dispatched" in str(e):
+                            logger.info(f"Model is offloaded/dispatched, skipping device movement: {e}")
+                            return
+                        else:
+                            logger.warning(f"Could not move model to {target_device}: {e}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Unexpected error during device movement: {e}")
+                        logger.info("ℹ️ Keeping model on current device")
+
+                # Move models to device safely
+                safe_move_to_device(self.adapt_model, self.device)
+                safe_move_to_device(self.base_model, self.device)
 
                 # Set to eval mode
                 self.adapt_model.eval()
@@ -105,8 +192,41 @@ def _load_ensemble_model(model_path: str) -> Tuple[Any, Any]:
 
             def to(self, device):
                 self.device = device
-                self.adapt_model.to(device)
-                self.base_model.to(device)
+                # Handle meta tensors and offloaded models safely when moving to new device
+                def safe_move_to_device_v2(model, target_device):
+                    try:
+                        # Check if model has offloaded modules
+                        if hasattr(model, 'hf_device_map') and model.hf_device_map:
+                            logger.info(f"Model has offloaded modules, skipping device movement")
+                            return
+                        
+                        # Try to move model safely
+                        model.to(target_device)
+                    except NotImplementedError as nie:
+                        if "meta tensor" in str(nie):
+                            logger.warning(f"⚠️ Meta tensor error during device movement: {nie}")
+                            logger.info("🔄 Attempting alternative device movement method...")
+                            try:
+                                # Try using to_empty() method
+                                model.to_empty(device=target_device)
+                                logger.info("✅ Successfully moved model using to_empty()")
+                            except Exception as to_empty_error:
+                                logger.warning(f"⚠️ to_empty() method also failed: {to_empty_error}")
+                                logger.info("ℹ️ Keeping model on current device")
+                        else:
+                            logger.warning(f"⚠️ NotImplementedError during device movement: {nie}")
+                    except RuntimeError as e:
+                        if "offloaded" in str(e) or "dispatched" in str(e):
+                            logger.info(f"Model is offloaded/dispatched, skipping device movement: {e}")
+                            return
+                        else:
+                            logger.warning(f"Could not move model to {target_device}: {e}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Unexpected error during device movement: {e}")
+                        logger.info("ℹ️ Keeping model on current device")
+                
+                safe_move_to_device_v2(self.adapt_model, device)
+                safe_move_to_device_v2(self.base_model, device)
                 return self
 
             def eval(self):
@@ -183,9 +303,46 @@ class RerankingEngine:
                         try:
                             from sentence_transformers import SentenceTransformer
 
+                            # Monkey patch SentenceTransformer to prevent auto device movement
+                            original_to = SentenceTransformer.to
+                            
+                            def safe_to(self, device=None, *args, **kwargs):
+                                """Safe device movement that handles meta tensors."""
+                                try:
+                                    return original_to(self, device, *args, **kwargs)
+                                except NotImplementedError as e:
+                                    if "meta tensor" in str(e).lower():
+                                        logger.info(f"Detected meta tensor in SentenceTransformer, using to_empty() for device: {device}")
+                                        return self.to_empty(device=device)
+                                    else:
+                                        raise
+                                except RuntimeError as e:
+                                    if "offloaded" in str(e) or "dispatched" in str(e):
+                                        logger.info(f"SentenceTransformer is offloaded/dispatched, keeping on current device: {e}")
+                                        return self
+                                    else:
+                                        raise
+                            
+                            # Apply monkey patch
+                            SentenceTransformer.to = safe_to
+                            
+                            # Load without device parameter first
                             model = SentenceTransformer(str(cfg["path"]))
+                            logger.info(f"✅ Successfully loaded SentenceTransformer with safe device handling")
+                            
+                            # Move to target device safely if needed
+                            if self.device != 'cpu':
+                                try:
+                                    # Use the safe device movement
+                                    model.to(self.device)
+                                    logger.info(f"✅ Moved SentenceTransformer to {self.device}")
+                                except Exception as e:
+                                    logger.warning(f"⚠️ Device movement failed, keeping on current device: {e}")
+                            
+                            # Restore original method
+                            SentenceTransformer.to = original_to
+                            
                             tokenizer = None  # SentenceTransformer handles tokenization internally
-                            logger.info(f"✅ Loaded {name} as SentenceTransformer")
                         except Exception as st_e:
                             logger.error(
                                 f"❌ Failed to load {name} as SentenceTransformer: {st_e}"
@@ -202,72 +359,58 @@ class RerankingEngine:
                                     f"✅ Loaded {name} as ensemble cross-encoder"
                                 )
                             else:
-                                # Fallback to standard classification model
-                                model, tokenizer = _load_model(
-                                    str(cfg["path"]),
-                                    str(cfg["path"]),
-                                    AutoModelForSequenceClassification,
-                                    AutoTokenizer,
-                                    num_labels=1,
-                                )
-                                logger.info(
-                                    f"✅ Loaded {name} as AutoModelForSequenceClassification"
-                                )
-                        except Exception as seq_e:
-                            logger.info(
-                                f"🔄 Trying to load {name} as AutoModel: {seq_e}"
-                            )
-                            # Fallback to AutoModel for sentence-transformers models
-                            try:
-                                model, tokenizer = _load_model(
-                                    str(cfg["path"]),
-                                    str(cfg["path"]),
-                                    AutoModel,
-                                    AutoTokenizer,
-                                )
-                                logger.info(f"✅ Loaded {name} as AutoModel")
-                            except Exception as auto_e:
                                 logger.warning(
-                                    f"🔄 Final fallback: trying sentence-transformers directly for {name}"
+                                    f"🔄 Ensemble model loading failed for {name}, trying fallback methods"
                                 )
-                                # Final fallback: try sentence-transformers directly
-                                try:
-                                    from sentence_transformers import (
-                                        SentenceTransformer,
-                                    )
-
-                                    st_model = SentenceTransformer(str(cfg["path"]))
-
-                                    # Create wrapper for sentence-transformers model
-                                    class STModelWrapper:
-                                        def __init__(self, st_model):
-                                            self.st_model = st_model
-                                            self.device = (
-                                                next(st_model.parameters()).device
-                                                if hasattr(st_model, "parameters")
-                                                else "cpu"
+                                # Try to load individual components if ensemble fails
+                                model_dir = Path(cfg["path"])
+                                adapt_model_path = model_dir / "adapt_model"
+                                base_model_path = model_dir / "base_model"
+                                
+                                if adapt_model_path.exists() and base_model_path.exists():
+                                    # Try to load adapt_model as fallback
+                                    try:
+                                        model, tokenizer = _load_model(
+                                            str(adapt_model_path),
+                                            str(model_dir),  # Use root directory for tokenizer
+                                            AutoModelForSequenceClassification,
+                                            AutoTokenizer,
+                                            num_labels=1,
+                                        )
+                                        logger.info(
+                                            f"✅ Loaded {name} fallback as adapt_model"
+                                        )
+                                    except Exception as adapt_e:
+                                        logger.warning(
+                                            f"🔄 Adapt model fallback failed: {adapt_e}"
+                                        )
+                                        # Final fallback to base model
+                                        try:
+                                            model, tokenizer = _load_model(
+                                                str(base_model_path),
+                                                str(model_dir),  # Use root directory for tokenizer
+                                                AutoModelForSequenceClassification,
+                                                AutoTokenizer,
+                                                num_labels=1,
                                             )
-
-                                        def to(self, device):
-                                            self.device = device
-                                            return self
-
-                                        def __call__(self, **inputs):
-                                            # For sentence-transformers, we'll handle this differently in _predict_batch
-                                            return self.st_model
-
-                                    model = STModelWrapper(st_model)
-                                    tokenizer = (
-                                        None  # We'll handle tokenization differently
-                                    )
-                                    logger.info(
-                                        f"✅ Loaded {name} with sentence-transformers wrapper"
-                                    )
-                                except Exception as st_e:
+                                            logger.info(
+                                                f"✅ Loaded {name} fallback as base_model"
+                                            )
+                                        except Exception as base_e:
+                                            logger.error(
+                                                f"❌ All ensemble fallbacks failed for {name}: {base_e}"
+                                            )
+                                            raise
+                                else:
                                     logger.error(
-                                        f"❌ All loading methods failed for {name}: {st_e}"
+                                        f"❌ Ensemble model structure invalid for {name}: missing subdirectories"
                                     )
-                                    raise
+                                    raise ValueError(f"Invalid ensemble model structure: {cfg['path']}")
+                        except Exception as seq_e:
+                            logger.error(
+                                f"❌ Ensemble model loading failed for {name}: {seq_e}"
+                            )
+                            raise
                     else:
                         # Auto-detect model type
                         try:

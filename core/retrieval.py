@@ -26,6 +26,19 @@ except ImportError as e:
 logger = get_logger(__name__)
 
 
+def _safe_move_to_device(model, device):
+    """Safely move model to device, handling meta tensors."""
+    try:
+        model.to(device)
+    except NotImplementedError as e:
+        if "meta tensor" in str(e).lower():
+            logger.info(f"Detected meta tensor, using to_empty() for device: {device}")
+            model.to_empty(device=device)
+        else:
+            raise
+    return model
+
+
 class RetrievalEngine:
     """Retrieval engine using a bi-encoder and FAISS index."""
 
@@ -43,7 +56,70 @@ class RetrievalEngine:
 
         try:
             logger.info(f"Loading bi-encoder from: {bi_encoder_path}")
-            self.bi_encoder = SentenceTransformer(bi_encoder_path, device=self.device)
+            
+            # Load SentenceTransformer with meta tensor handling
+            try:
+                # Monkey patch SentenceTransformer to prevent auto device movement
+                original_to = SentenceTransformer.to
+                
+                def safe_to(self, device=None, *args, **kwargs):
+                    """Safe device movement that handles meta tensors."""
+                    try:
+                        return original_to(self, device, *args, **kwargs)
+                    except NotImplementedError as e:
+                        if "meta tensor" in str(e).lower():
+                            logger.info(f"Detected meta tensor in SentenceTransformer, using to_empty() for device: {device}")
+                            return self.to_empty(device=device)
+                        else:
+                            raise
+                    except RuntimeError as e:
+                        if "offloaded" in str(e) or "dispatched" in str(e):
+                            logger.info(f"SentenceTransformer is offloaded/dispatched, keeping on current device: {e}")
+                            return self
+                        else:
+                            raise
+                
+                # Apply monkey patch
+                SentenceTransformer.to = safe_to
+                
+                # Load without device parameter first
+                self.bi_encoder = SentenceTransformer(bi_encoder_path)
+                logger.info("✅ Successfully loaded SentenceTransformer with safe device handling")
+                
+                # Move to target device safely if needed
+                if self.device != 'cpu':
+                    try:
+                        # Use the safe device movement with better error handling
+                        logger.info(f"🔄 Attempting to move SentenceTransformer to {self.device}...")
+                        self.bi_encoder.to(self.device)
+                        logger.info(f"✅ Successfully moved SentenceTransformer to {self.device}")
+                    except NotImplementedError as nie:
+                        logger.warning(f"⚠️ Meta tensor error during device movement: {nie}")
+                        logger.info("🔄 Attempting alternative device movement method...")
+                        try:
+                            # Try using to_empty() method
+                            self.bi_encoder.to_empty(device=self.device)
+                            logger.info(f"✅ Successfully moved SentenceTransformer to {self.device} using to_empty()")
+                        except Exception as to_empty_error:
+                            logger.warning(f"⚠️ to_empty() method also failed: {to_empty_error}")
+                            logger.info("ℹ️ Keeping SentenceTransformer on current device")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Device movement failed, keeping on current device: {e}")
+                else:
+                    logger.info("ℹ️ SentenceTransformer kept on CPU as requested")
+                
+                # Verify model is ready
+                if hasattr(self.bi_encoder, 'device'):
+                    logger.info(f"✅ SentenceTransformer device: {self.bi_encoder.device}")
+                else:
+                    logger.info("ℹ️ SentenceTransformer device not accessible")
+                
+                # Restore original method
+                SentenceTransformer.to = original_to
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to load SentenceTransformer: {e}")
+                raise
 
             logger.info(f"Loading FAISS index from: {faiss_index_path}")
             self.faiss_index = faiss.read_index(faiss_index_path)
@@ -104,7 +180,7 @@ class RetrievalEngine:
         try:
             # Encode queries in a batch
             query_embeddings = self.bi_encoder.encode(
-                queries, convert_to_tensor=True, device=self.device
+                queries, convert_to_tensor=True
             )
             query_embeddings_np = query_embeddings.cpu().numpy()
             faiss.normalize_L2(query_embeddings_np)

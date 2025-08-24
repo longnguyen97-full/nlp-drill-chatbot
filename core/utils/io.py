@@ -13,6 +13,21 @@ Utility functions for file I/O operations including JSON and JSONL handling.
 logger = logging.getLogger(__name__)
 
 
+def ensure_directory_exists(directory_path: Union[Path, str]) -> Path:
+    """Ensures a directory exists, creating it if necessary.
+    
+    Args:
+        directory_path: Path to the directory
+        
+    Returns:
+        Path object of the ensured directory
+    """
+    directory_path = Path(directory_path)
+    directory_path.mkdir(parents=True, exist_ok=True)
+    logger.debug(f"Directory ensured: {directory_path}")
+    return directory_path
+
+
 def load_json(file_path: Union[Path, str]) -> Union[Dict, List]:
     """Loads a JSON file.
 

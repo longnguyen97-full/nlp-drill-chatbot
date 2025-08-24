@@ -12,39 +12,34 @@ import sys
 from pathlib import Path
 import os
 import time
+from datetime import datetime
 
-# Import pages with proper error handling
-try:
-    # Use relative imports when running from app directory
-    from .pages import search, analysis, system
+# Lazy import pages to avoid circular import
+pages_loaded = True
 
-    pages_loaded = True
-
-except ImportError as e:
-    # Fallback for direct execution
+def get_page_module(page_name):
+    """Lazy load page modules to avoid circular import."""
     try:
-        # Check if LAWBOT_PROJECT_ROOT is set (from run_app.py)
-        if os.environ.get("LAWBOT_PROJECT_ROOT"):
-            project_root = os.environ["LAWBOT_PROJECT_ROOT"]
-            sys.path.insert(0, project_root)
+        # Add current directory to Python path for direct import
+        current_dir = Path(__file__).parent
+        if str(current_dir) not in sys.path:
+            sys.path.insert(0, str(current_dir))
+        
+        # Direct import from pages directory
+        if page_name == "search":
+            from pages import search
+            return search
+        elif page_name == "analysis":
+            from pages import analysis
+            return analysis
+        elif page_name == "system":
+            from pages import system
+            return system
         else:
-            # Add parent directory to path for direct execution
-            sys.path.append(str(Path(__file__).parent.parent))
-
-        from app.pages import search, analysis, system
-
-        pages_loaded = True
-    except ImportError as e2:
-        st.error(
-            f"**Lỗi Import Module:** Không thể tải các trang của ứng dụng. Lỗi: `{e2}`\n\n"
-            f"Vui lòng đảm bảo bạn đang chạy ứng dụng từ thư mục gốc của dự án và đã cài đặt tất cả các gói phụ thuộc.\n\n"
-            f"**Hướng dẫn khắc phục:**\n"
-            f"1. Chạy từ thư mục gốc: `python run_app.py`\n"
-            f"2. Kiểm tra cài đặt: `pip install -r requirements.txt`\n"
-            f"3. Kiểm tra cấu trúc thư mục app/pages/"
-        )
-        pages_loaded = False
-        st.stop()
+            return None
+    except ImportError as e:
+        st.warning(f"⚠️ Could not load page {page_name}: {e}")
+        return None
 
 
 # Lazy load pipeline to avoid import errors
@@ -67,6 +62,14 @@ def render_app():
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    
+    # --- System Status Display ---
+    pipeline = get_pipeline()
+    if pipeline:
+        # System status
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🔧 Trạng thái Hệ thống")
+        st.sidebar.info("Hệ thống hoạt động bình thường")
 
     # --- Hide default Streamlit navigation ---
     hide_default_navigation = """
@@ -99,11 +102,27 @@ def render_app():
     st.sidebar.title("🎯 Hệ thống QA Pháp luật")
 
     if pages_loaded:
-        page_options = {
-            "🔍 Tìm kiếm & Hỏi đáp": search.render_search_page,
-            "📊 Phân tích & Báo cáo": analysis.render_analysis_page,
-            "🔧 Trạng thái": system.main,
-        }
+        # Lazy load page functions to avoid circular import
+        def get_page_functions():
+            try:
+                search_module = get_page_module("search")
+                analysis_module = get_page_module("analysis")
+                system_module = get_page_module("system")
+                
+                if search_module and analysis_module and system_module:
+                    return {
+                        "🔍 Tìm kiếm & Hỏi đáp": search_module.render_search_page,
+                        "📊 Phân tích & Báo cáo": analysis_module.render_analysis_page,
+                        "🔧 Trạng thái": system_module.main,
+                    }
+                else:
+                    st.error("❌ Không thể tải một số trang")
+                    return {}
+            except Exception as e:
+                st.error(f"❌ Lỗi khi tải trang: {e}")
+                return {}
+        
+        page_options = get_page_functions()
 
         selected_page_title = st.sidebar.selectbox(
             "Chọn trang:",
@@ -114,38 +133,29 @@ def render_app():
 
         # --- Main Content ---
         if selected_page_title in page_options:
-            # Enhanced page state management to prevent element bleeding
+            # Optimized page state management to prevent unnecessary reloads
             if "current_page" not in st.session_state:
                 st.session_state.current_page = selected_page_title
                 st.session_state.page_load_time = time.time()
 
-            # Clear page-specific session states when switching pages
+            # Update current page only when actually switching (no rerun)
             if st.session_state.current_page != selected_page_title:
-                # Clear all page-specific states to prevent element bleeding
-                keys_to_clear = [
-                    "analysis_page_loaded",
-                    "search_page_loaded",
-                    "system_page_loaded",
+                # Minimal state clearing - only essential keys
+                essential_keys_to_clear = [
                     "comprehensive_eval_results",
                     "eval_loading",
                     "switch_to_tab2",
-                    "pipeline_loaded",
-                    "search_results",
-                    "search_query",
                 ]
 
-                for key in keys_to_clear:
+                for key in essential_keys_to_clear:
                     if key in st.session_state:
                         del st.session_state[key]
 
-                # Update current page and force clean render
+                # Update current page without forcing rerun
                 st.session_state.current_page = selected_page_title
                 st.session_state.page_load_time = time.time()
 
-                # Force clean page transition
-                st.rerun()
-
-            # Render the selected page with clean state
+            # Render the selected page with optimized state
             page_options[selected_page_title]()
 
     # --- Footer ---

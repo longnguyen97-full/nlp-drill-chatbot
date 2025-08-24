@@ -317,9 +317,7 @@ def run_comprehensive_evaluation(_pipeline, test_queries=None):
                 from config.loader import config
                 pipeline_results = _pipeline.predict(
                     query, 
-                    top_k_retrieval=config.app.top_k_retrieval,
-                    top_k_light=config.app.top_k_light,
-                    top_k_final=config.app.top_k_final  # Sử dụng config thay vì hardcode
+                    top_k=config.app.top_k_final  # ✅ Use top_k parameter
                 )
 
                 if not pipeline_results:

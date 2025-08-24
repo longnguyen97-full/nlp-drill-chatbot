@@ -12,6 +12,8 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 import logging
 import sys
+from datetime import datetime
+import time
 
 try:
     from core.retrieval import RetrievalEngine
@@ -19,6 +21,7 @@ try:
     from core.utils.logging_manager import get_logger
     from core.utils.versioning import get_latest_version_path
     from core.utils.parent_law_manager import ensure_parent_law_mapping
+    # Auto-evaluator removed for stability
     from config.loader import config
 except ImportError as e:
     logging.error(f"Import error in pipeline.py: {e}")
@@ -37,10 +40,18 @@ class LegalQAPipeline:
         faiss_index_path: Optional[Path] = None,
         content_map_path: Optional[Path] = None,
         index_to_aid_path: Optional[Path] = None,
+        enable_auto_evaluation: bool = False,  # Disabled for stability
     ):
         """Initialize the LegalQA Pipeline."""
         self.is_ready = False
         self.loaded_model_paths = {}
+        self.enable_auto_evaluation = enable_auto_evaluation
+        
+        # Initialize configuration
+        self.config = self._initialize_config()
+        
+        # Auto-evaluation disabled for stability
+        self.auto_evaluator = None
 
         try:
             # Ensure parent law mapping is available before proceeding
@@ -77,12 +88,16 @@ class LegalQAPipeline:
                 )
 
             logger.info(f"Loading Retriever with Bi-Encoder: {bi_encoder_to_load}")
-            self.retriever = RetrievalEngine(
-                bi_encoder_path=str(bi_encoder_to_load),
-                faiss_index_path=str(faiss_to_load),
-                content_map_path=str(content_map_to_load),
-                index_to_aid_path=str(index_to_aid_to_load),
-            )
+            try:
+                self.retriever = RetrievalEngine(
+                    bi_encoder_path=str(bi_encoder_to_load),
+                    faiss_index_path=str(faiss_to_load),
+                    content_map_path=str(content_map_to_load),
+                    index_to_aid_path=str(index_to_aid_to_load),
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize RetrievalEngine: {e}")
+                raise
             self.loaded_model_paths["bi_encoder"] = bi_encoder_to_load
             self.loaded_model_paths["faiss_index"] = faiss_to_load
 
@@ -200,157 +215,81 @@ class LegalQAPipeline:
             else:
                 logger.info(f"Reranker {config_name} is disabled or not configured")
         return resolved_configs
-
+    
+    def _initialize_config(self) -> Dict[str, Any]:
+        """Initialize pipeline configuration with defaults."""
+        return {
+            "top_k_retrieval": 20,
+            "top_k_light": 10,
+            "use_light_ranking": True,
+            "use_cross_encoder": True,
+            "light_weight": 0.3,
+            "cross_encoder_weight": 0.7
+        }
+    
     def predict(
         self,
         query: str,
-        top_k_retrieval: Optional[int] = None,
-        top_k_light: Optional[int] = None,  # ✅ Add top_k_light parameter
-        top_k_final: Optional[int] = None,
+        top_k: int = 5,
+        include_scores: bool = True,
+        include_content: bool = True
     ) -> List[Dict[str, Any]]:
-        """
-        Predict relevant documents using the 3-tier architecture.
-        Parameters are taken from the config file but can be overridden.
-        """
-        # Use config values as defaults if parameters are not provided
-        cfg_app = config.app
-        cfg_reranker = config.reranker_pipeline
-
-        # Tối ưu hóa Recall: Sử dụng cấu hình mở rộng candidate pool
-        top_k_retrieval = top_k_retrieval or cfg_app.top_k_retrieval
-        top_k_light = top_k_light or cfg_app.top_k_light  # Sử dụng top_k_light từ config
-        top_k_final = top_k_final or cfg_app.top_k_final
-
-        # HOÀN TRẢ về ban đầu: KHÔNG có threshold filtering
-        # retrieval_threshold = getattr(cfg_app, 'retrieval_threshold', 0.15)
-        # light_threshold = getattr(cfg_app, 'light_reranker_threshold', 0.10)
-        # cross_threshold = getattr(cfg_app, 'cross_encoder_threshold', 0.05)
-
-        use_light_ranking = cfg_reranker.light_reranker.get("enabled", False)
-        light_weight = cfg_reranker.light_reranker.get("weight", 0.7)
-
-        use_cross_encoder = cfg_reranker.cross_encoder.get("enabled", False)
-        cross_encoder_weight = cfg_reranker.cross_encoder.get("weight", 0.3)
-
-        # Debug logging for reranker configuration
-        logger.info(
-            f"🔧 Reranker Config - Light: {use_light_ranking}, Cross: {use_cross_encoder}"
-        )
-        logger.info(
-            f"🔧 Reranker Weights - Light: {light_weight}, Cross: {cross_encoder_weight}"
-        )
-        logger.info(
-            f"🔧 Reranker Engine Ready: {self.reranker.is_ready if self.reranker else False}"
-        )
-
-        if not self.is_ready:
-            raise RuntimeError("Pipeline is not ready. Please check initialization.")
-
+        """Predict relevant documents for a query."""
+        start_time = time.time()
+        
         try:
-            logger.info(f"Processing query: {query[:100]}...")
-            logger.info(
-                f"Tiers: Ret({top_k_retrieval}) -> Light({top_k_light}) -> Cross -> Final({top_k_final})"
-            )
-            logger.info(
-                f"🔧 Parameters: retrieval={top_k_retrieval}, light={top_k_light}, final={top_k_final}"
-            )
-
             # Tier 1: Bi-Encoder Retrieval
-            logger.info("🎯 Tier 1: Bi-Encoder Retrieval")
-            documents = self.retriever.retrieve(query, top_k=top_k_retrieval)
-            if not documents:
-                logger.warning("No documents retrieved from Bi-Encoder")
-                return []
-
-            # Initialize scores
-            for doc in documents:
-                doc["light_reranker_score"] = 0.0
-                doc["cross_encoder_score"] = 0.0
-                # Debug logging
-                # logger.info(
-                #     f"🔍 Document initialized with scores: light={doc['light_reranker_score']}, cross={doc['cross_encoder_score']}"
-                # )
-
-            # Tier 2: Light Reranking (if enabled)
-            if use_light_ranking and self.reranker and self.reranker.is_ready:
-                logger.info("⚡ Tier 2: Light Reranking")
-                documents = self.reranker.rank_light(query, documents[:top_k_light])
-                # Debug: Check if scores were updated
-                for doc in documents[:3]:  # Check first 3 docs
-                    logger.info(
-                        f"🔍 After light reranking: light_score={doc.get('light_reranker_score', 'N/A')}"
-                    )
-            else:
-                logger.warning(
-                    f"⚠️ Light reranking skipped: use_light_ranking={use_light_ranking}, reranker={self.reranker is not None}, is_ready={self.reranker.is_ready if self.reranker else False}"
-                )
-
-            # Tier 3: Cross-Encoder Reranking (if enabled)
-            if use_cross_encoder and self.reranker and self.reranker.is_ready:
-                logger.info("🎯 Tier 3: Cross-Encoder Reranking")
-                # Rerank the top candidates from the previous stage
-                documents = self.reranker.rank_cross(query, documents)
-                # Debug: Check if scores were updated
-                for doc in documents[:3]:  # Check first 3 docs
-                    logger.info(
-                        f"🔍 After cross-encoder reranking: cross_score={doc.get('cross_encoder_score', 'N/A')}"
-                    )
-            else:
-                logger.warning(
-                    f"⚠️ Cross-encoder reranking skipped: use_cross_encoder={use_cross_encoder}, reranker={self.reranker is not None}, is_ready={self.reranker.is_ready if self.reranker else False}"
-                )
-
-            # SỬA: Đánh giá đúng Tier 3 (PhoBERT-base-v2 vs PhoBERT-large)
-            logger.info("🔄 Combining scores from all tiers với Tier 3 ensemble đúng...")
+            retrieval_results = self._retrieve_documents(query, top_k=self.config["top_k_retrieval"])
             
-            for doc in documents:
-                retrieval_score = doc.get("retrieval_score", 0.0)
-                light_score = doc.get("light_reranker_score", 0.0)
-                
-                # ĐÚNG: PhoBERT-base-v2 vs PhoBERT-large scores từ Tier 3
-                phobert_base_score = doc.get("phobert_base_score", 0.0)
-                phobert_large_score = doc.get("phobert_large_score", 0.0)
-                
-                # Ensemble score của Tier 3 (70% PhoBERT-base-v2 + 30% PhoBERT-large)
-                tier3_ensemble_score = (
-                    0.7 * phobert_base_score + 0.3 * phobert_large_score
-                )
-
-                # HOÀN TRẢ về ban đầu: KHÔNG filter scores
-                # Giữ nguyên tất cả scores để tăng Recall
-
-                # Flexible score combination based on which tiers were used
-                final_score = retrieval_score  # Start with base score
-                if use_light_ranking:
-                    final_score = (
-                        light_weight * light_score + (1 - light_weight) * final_score
-                    )
-                if use_cross_encoder:
-                    final_score = (
-                        cross_encoder_weight * tier3_ensemble_score
-                        + (1 - cross_encoder_weight) * final_score
-                    )
-
-                doc["final_score"] = final_score
-                doc["score_breakdown"] = {
-                    "retrieval": retrieval_score,
-                    "light_reranker": light_score,
-                    "tier3_ensemble": tier3_ensemble_score,  # Sửa tên
-                    "phobert_base": phobert_base_score,      # Thêm score riêng
-                    "phobert_large": phobert_large_score,    # Thêm score riêng
-                }
-
-            final_results = sorted(
-                documents, key=lambda x: x["final_score"], reverse=True
-            )[:top_k_final]
-            logger.info(
-                f"✅ Final ranking completed. Returning {len(final_results)} results"
-            )
-
-            return final_results
-
+            if not retrieval_results:
+                logger.warning("No documents retrieved from Tier 1")
+                return []
+            
+            # Tier 2: Light Reranker (if enabled)
+            if self.config["use_light_ranking"] and self.reranker:
+                light_results = self._light_rerank(query, retrieval_results, top_k=self.config["top_k_light"])
+            else:
+                light_results = retrieval_results
+            
+            # Tier 3: Cross-Encoder (if enabled)
+            if self.config["use_cross_encoder"] and self.reranker:
+                final_results = self._cross_encode_rerank(query, light_results, top_k)
+            else:
+                final_results = light_results[:top_k]
+            
+            # Add metadata and scores
+            results = self._add_metadata(final_results, include_scores, include_content)
+            
+            # Auto-evaluation (if enabled)
+            if self.auto_evaluator:
+                try:
+                    # Get pipeline configuration for evaluation
+                    pipeline_config = {
+                        "top_k_retrieval": self.config["top_k_retrieval"],
+                        "top_k_light": self.config["top_k_light"],
+                        "top_k_final": top_k,
+                        "use_light_ranking": self.config["use_light_ranking"],
+                        "use_cross_encoder": self.config["use_cross_encoder"],
+                        "light_weight": self.config["light_weight"],
+                        "cross_encoder_weight": self.config["cross_encoder_weight"]
+                    }
+                    
+                    # Get model versions
+                    model_versions = self._get_model_versions()
+                    
+                    # Performance tracking (simplified, no auto-evaluation)
+                    logger.info(f"Query processed with {len(results)} results")
+                    
+                except Exception as e:
+                    logger.warning(f"Auto-evaluation failed: {e}")
+            
+            query_time = (time.time() - start_time) * 1000
+            logger.info(f"Query completed in {query_time:.1f}ms, returned {len(results)} results")
+            
+            return results
+            
         except Exception as e:
-            logger.error(f"Prediction failed: {e}", exc_info=True)
+            logger.error(f"Prediction failed: {e}")
             return []
 
     def get_pipeline_status(self) -> Dict[str, Any]:
@@ -360,10 +299,18 @@ class LegalQAPipeline:
             "loaded_models": self.get_loaded_model_versions(),
             "retriever_ready": hasattr(self, "retriever") and self.retriever.is_ready,
             "reranker_ready": False,
+            "auto_evaluation_enabled": self.enable_auto_evaluation,
         }
         if hasattr(self, "reranker") and self.reranker is not None:
             status["reranker_ready"] = self.reranker.is_ready
             status["reranker_info"] = self.reranker.get_engine_info()
+        
+        # Auto-evaluation status (disabled for stability)
+        status["auto_evaluation"] = {
+            "status": "disabled",
+            "reason": "Removed for system stability"
+        }
+        
         return status
 
     def cleanup(self):
@@ -376,6 +323,126 @@ class LegalQAPipeline:
             logger.info("Pipeline cleanup completed")
         except Exception as e:
             logger.warning(f"Error during pipeline cleanup: {e}")
+    
+    def export_evaluation_data(self, output_path: Optional[Path] = None) -> bool:
+        """Export evaluation data for analysis."""
+        logger.warning("Auto-evaluation export disabled for stability")
+        return False
+    
+    def get_evaluation_summary(self) -> Dict[str, Any]:
+        """Get evaluation summary for monitoring."""
+        return {
+            "status": "disabled",
+            "reason": "Auto-evaluation removed for system stability"
+        }
+
+    def _retrieve_documents(self, query: str, top_k: int) -> List[Dict[str, Any]]:
+        """Retrieve documents using Bi-Encoder."""
+        try:
+            documents = self.retriever.retrieve(query, top_k=top_k)
+            
+            # Initialize scores
+            for doc in documents:
+                doc["light_reranker_score"] = 0.0
+                doc["cross_encoder_score"] = 0.0
+                doc["phobert_base_score"] = 0.0
+                doc["phobert_large_score"] = 0.0
+                doc["tier3_ensemble_score"] = 0.0
+            
+            return documents
+        except Exception as e:
+            logger.error(f"Document retrieval failed: {e}")
+            return []
+    
+    def _light_rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        """Apply light reranking."""
+        try:
+            if not self.reranker or not self.reranker.is_ready:
+                logger.warning("Light reranker not available, skipping")
+                return documents
+            
+            reranked = self.reranker.rank_light(query, documents[:top_k])
+            return reranked
+        except Exception as e:
+            logger.error(f"Light reranking failed: {e}")
+            return documents
+    
+    def _cross_encode_rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
+        """Apply cross-encoder reranking."""
+        try:
+            if not self.reranker or not self.reranker.is_ready:
+                logger.warning("Cross-encoder not available, skipping")
+                return documents[:top_k]
+            
+            # Apply cross-encoder reranking
+            reranked = self.reranker.rank_cross(query, documents)
+            
+            # Calculate ensemble scores for Tier 3
+            for doc in reranked:
+                phobert_base_score = doc.get("phobert_base_score", 0.0)
+                phobert_large_score = doc.get("phobert_large_score", 0.0)
+                
+                # Ensemble score (70% PhoBERT-base + 30% PhoBERT-large)
+                tier3_ensemble_score = (0.7 * phobert_base_score + 0.3 * phobert_large_score)
+                doc["tier3_ensemble_score"] = tier3_ensemble_score
+                
+                # Calculate final score
+                retrieval_score = doc.get("retrieval_score", 0.0)
+                light_score = doc.get("light_reranker_score", 0.0)
+                
+                final_score = retrieval_score
+                if self.config["use_light_ranking"]:
+                    final_score = (self.config["light_weight"] * light_score + 
+                                 (1 - self.config["light_weight"]) * final_score)
+                if self.config["use_cross_encoder"]:
+                    final_score = (self.config["cross_encoder_weight"] * tier3_ensemble_score + 
+                                 (1 - self.config["cross_encoder_weight"]) * final_score)
+                
+                doc["final_score"] = final_score
+                doc["score_breakdown"] = {
+                    "retrieval": retrieval_score,
+                    "light_reranker": light_score,
+                    "tier3_ensemble": tier3_ensemble_score,
+                    "phobert_base": phobert_base_score,
+                    "phobert_large": phobert_large_score,
+                }
+            
+            # Sort by final score and return top_k
+            return sorted(reranked, key=lambda x: x["final_score"], reverse=True)[:top_k]
+            
+        except Exception as e:
+            logger.error(f"Cross-encoder reranking failed: {e}")
+            return documents[:top_k]
+    
+    def _add_metadata(self, documents: List[Dict[str, Any]], include_scores: bool, include_content: bool) -> List[Dict[str, Any]]:
+        """Add metadata to documents."""
+        for doc in documents:
+            if not include_scores:
+                # Remove score fields if not requested
+                doc.pop("retrieval_score", None)
+                doc.pop("light_reranker_score", None)
+                doc.pop("cross_encoder_score", None)
+                doc.pop("final_score", None)
+                doc.pop("score_breakdown", None)
+            
+            if not include_content:
+                # Remove content if not requested
+                doc.pop("content", None)
+        
+        return documents
+    
+    def _get_model_versions(self) -> Dict[str, str]:
+        """Get loaded model versions for evaluation."""
+        versions = {}
+        
+        if hasattr(self, "retriever") and self.retriever:
+            versions["Bi-Encoder"] = getattr(self.retriever, 'model_version', 'Unknown')
+        
+        if hasattr(self, "reranker") and self.reranker:
+            versions["Light Reranker"] = getattr(self.reranker, 'light_model_version', 'Unknown')
+            versions["Cross Encoder"] = getattr(self.reranker, 'cross_model_version', 'Unknown')
+        
+        return versions
 
 
 # Alias for backward compatibility

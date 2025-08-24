@@ -1,26 +1,25 @@
-# 🎨 LawBot UI Technical Guide
+# 🎨 LawBot UI Technical Guide - Hướng dẫn Kỹ thuật Giao diện
 
 ## 📋 **Tổng quan**
 
-Tài liệu này mô tả chi tiết kiến trúc UI và các kỹ thuật giao diện người dùng đã được áp dụng trong LawBot, bao gồm:
+Tài liệu này mô tả chi tiết kiến trúc UI và các kỹ thuật giao diện người dùng đã được áp dụng trong LawBot v8.3, bao gồm:
 
-- **Streamlit Architecture**: Modular page system với navigation
-- **UI Components**: Custom components và styling
-- **State Management**: Session state và caching strategies
-- **Responsive Design**: Layout optimization và mobile support
-- **Performance Optimization**: Lazy loading và caching
+- **Streamlit Architecture**: Modular page system với lazy loading
+- **UI Components**: Native Streamlit components với custom styling
+- **State Management**: Session state optimization và reload prevention
+- **Responsive Design**: Column-based layout và mobile support
+- **Performance Optimization**: Caching strategies và memory management
 
 ---
 
 ## 🏗️ **Kiến trúc UI Tổng thể**
 
-**Tier 3 Ensemble với ADAPT + HNM + HPO Enhancement:**
-- **PhoBERT-base-v2 (70%)**: ADAPT-enhanced cho domain adaptation
-- **PhoBERT-large (30%)**: Cũng được ADAPT enhancement trước khi ensemble
-- **Dual Model Integration**: UI hiển thị kết quả từ cả hai model
-- **Ensemble Weighting Display**: Hiển thị trọng số và contribution của từng model
-- **HNM Enhancement**: Hard negative mining cho improved training data quality
-- **HPO Enhancement**: Hyperparameter optimization cho optimal ensemble performance
+**Kiến trúc UI LawBot v8.3:**
+- **Single Entry Point**: `app/app.py` là điểm khởi đầu duy nhất
+- **Lazy Loading**: Tránh circular import với lazy page loading
+- **Session State Optimization**: Quản lý trạng thái tối ưu để tránh reload
+- **Form-based Interaction**: Sử dụng `st.form` để ngăn auto-rerun
+- **Caching Strategy**: TTL-based caching cho pipeline và data
 
 ### **1. Main Application Structure**
 
@@ -36,6 +35,14 @@ def render_app():
         initial_sidebar_state="expanded",
     )
     
+    # --- System Status Display ---
+    pipeline = get_pipeline()
+    if pipeline:
+        # System status
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🔧 Trạng thái Hệ thống")
+        st.sidebar.info("Hệ thống hoạt động bình thường")
+
     # --- Hide default Streamlit navigation ---
     hide_default_navigation = """
     <style>
@@ -66,45 +73,78 @@ def render_app():
     # --- Sidebar Navigation ---
     st.sidebar.title("🎯 Hệ thống QA Pháp luật")
     
-    # --- Page Selection ---
-    page_options = {
-        "🔍 Tìm kiếm & Hỏi đáp": search.render_search_page,
-        "📊 Phân tích & Báo cáo": analysis.render_analysis_page,
-        "🔧 Trạng thái": system.main,
-    }
-    
-    selected_page_title = st.sidebar.selectbox(
-        "Chọn trang:",
-        list(page_options.keys()),
-        index=0,
-        key="main_page_selector",
-    )
+    # --- Lazy Page Loading ---
+    if pages_loaded:
+        # Lazy load page functions to avoid circular import
+        def get_page_functions():
+            try:
+                search_module = get_page_module("search")
+                analysis_module = get_page_module("analysis")
+                system_module = get_page_module("system")
+                
+                if search_module and analysis_module and system_module:
+                    return {
+                        "🔍 Tìm kiếm & Hỏi đáp": search_module.render_search_page,
+                        "📊 Phân tích & Báo cáo": analysis_module.render_analysis_page,
+                        "🔧 Trạng thái": system_module.main,
+                    }
+                else:
+                    st.error("❌ Không thể tải một số trang")
+                    return {}
+            except Exception as e:
+                st.error(f"❌ Lỗi khi tải trang: {e}")
+                return {}
+        
+        page_options = get_page_functions()
+
+        selected_page_title = st.sidebar.selectbox(
+            "Chọn trang:",
+            list(page_options.keys()),
+            index=0,
+            key="main_page_selector",
+        )
 ```
 
 **Kiến trúc phân tích:**
 - **Single Entry Point**: `app/app.py` là điểm khởi đầu duy nhất
-- **Modular Pages**: 3 trang chính được import và quản lý động
-- **Custom Navigation**: Sidebar navigation tùy chỉnh thay vì Streamlit mặc định
+- **Lazy Loading**: Tránh circular import với `get_page_module()` function
+- **Dynamic Page Loading**: Pages được load động khi cần thiết
+- **Error Handling**: Graceful error handling cho import failures
 - **Page State Management**: Quản lý trạng thái trang để tránh element bleeding
 
 ### **2. Page Module Structure**
 
 ```python
-# Từ source code app/pages/__init__.py - Page module structure
+# Từ source code app/pages/ - Page module structure
 # Mỗi trang được implement như một module riêng biệt:
-# - search.py: Trang tìm kiếm và hỏi đáp
-# - analysis.py: Trang phân tích và báo cáo  
-# - system.py: Trang trạng thái hệ thống
+# - search.py: Trang tìm kiếm và hỏi đáp (function: render_search_page)
+# - analysis.py: Trang phân tích và báo cáo (function: render_analysis_page)
+# - system.py: Trang trạng thái hệ thống (function: main)
 
-# Mỗi trang có function render chính:
-def render_search_page():
-    """Render search page with all functionality."""
-    
-def render_analysis_page():
-    """Render analysis page with evaluation metrics."""
-    
-def main():  # system.py
-    """Main system status page function."""
+# Lazy loading pattern để tránh circular import:
+def get_page_module(page_name):
+    """Lazy load page modules to avoid circular import."""
+    try:
+        # Add current directory to Python path for direct import
+        current_dir = Path(__file__).parent
+        if str(current_dir) not in sys.path:
+            sys.path.insert(0, str(current_dir))
+        
+        # Direct import from pages directory
+        if page_name == "search":
+            from pages import search
+            return search
+        elif page_name == "analysis":
+            from pages import analysis
+            return analysis
+        elif page_name == "system":
+            from pages import system
+            return system
+        else:
+            return None
+    except ImportError as e:
+        st.warning(f"⚠️ Could not load page {page_name}: {e}")
+        return None
 ```
 
 ---
@@ -115,7 +155,7 @@ def main():  # system.py
 
 ```python
 # Từ source code app/pages/search.py - Search interface
-def main():
+def render_search_page():
     """Main search page function."""
     
     # Professional title with enhanced styling
@@ -139,61 +179,72 @@ def main():
                 font-size: 1.2rem;
                 font-weight: 500;
                 margin: 0;
+                opacity: 0.8;
             ">
-                Hệ thống Hỏi-Đáp Pháp luật Thông minh
+                Hệ thống Tìm kiếm & Hỏi đáp Pháp luật Thông minh
             </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    
-    # Search input section
-    st.markdown("### 🔍 **Nhập câu hỏi pháp luật**")
-    
-    # Search input with placeholder and examples
-    search_query = st.text_area(
-        "Câu hỏi:",
-        placeholder="Ví dụ: Điều kiện để được cấp giấy phép lái xe là gì?",
-        height=100,
-        key="search_input",
-        help="Nhập câu hỏi pháp luật cần tìm hiểu",
-    )
-    
-    # Search parameters
-    with st.expander("⚙️ **Tham số tìm kiếm**", expanded=False):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            top_k = st.slider(
-                "Số kết quả tối đa:",
-                min_value=5,
-                max_value=50,
-                value=20,
-                step=5,
-                help="Số lượng kết quả trả về",
-            )
-            
-            similarity_threshold = st.slider(
-                "Ngưỡng tương đồng:",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.3,
-                step=0.05,
-                help="Ngưỡng điểm tương đồng tối thiểu",
-            )
-        
-        with col2:
-            use_light_reranker = st.checkbox(
-                "Sử dụng Light Reranker",
-                value=True,
-                help="Sử dụng mô hình reranker nhẹ để cải thiện chất lượng",
-            )
-            
-            use_cross_encoder = st.checkbox(
-                "Sử dụng Cross-Encoder",
-                value=True,
-                help="Sử dụng mô hình cross-encoder để xếp hạng chính xác",
-            )
+
+    # Professional system overview in expander - simple like search parameters
+    with st.expander("🏗️ **Kiến trúc Hệ thống**", expanded=False):
+        st.markdown("**🎯 Kiến trúc 3 Tầng Tối ưu**")
+        st.markdown(
+            "**🔍 Tầng 1 - Bi-Encoder:** Retrieval thông minh với Sentence Transformers"
+        )
+        st.markdown(
+            "**⚡ Tầng 2 - Light Reranker:** PhoBERT-based reranking nhanh chóng"
+        )
+        st.markdown(
+            "**🎯 Tầng 3 - Cross-Encoder:** Ensemble ADAPT cho kết quả chính xác"
+        )
+        st.markdown(
+            "**💡 Ưu điểm:** Kết hợp sức mạnh của 3 mô hình để đạt độ chính xác cao nhất với hiệu suất tối ưu cho ứng dụng thực tế."
+        )
+
+    # Load pipeline
+    pipeline = load_pipeline()
+
+    if pipeline and pipeline.is_ready:
+        # Sidebar configuration - optimized to prevent unnecessary reruns
+        with st.sidebar:
+            st.header("⚙️ Cấu hình tìm kiếm")
+
+            # Use form to prevent auto-rerun on parameter changes
+            with st.form("search_config_form", clear_on_submit=False):
+                # Search parameters
+                final_results_count = st.slider(
+                    "Số kết quả cuối cùng:",
+                    min_value=1,
+                    max_value=20,
+                    value=st.session_state.get("final_results_count", 5),
+                    help="Số kết quả cuối cùng sẽ hiển thị",
+                    key="final_results_slider",
+                )
+
+                search_aggressiveness = st.selectbox(
+                    "Mức độ tìm kiếm:",
+                    ["Balanced", "Conservative", "Aggressive"],
+                    index=["Balanced", "Conservative", "Aggressive"].index(
+                        st.session_state.get("search_aggressiveness", "Balanced")
+                    )
+                )
+
+                # Force CPU option
+                force_cpu = st.checkbox(
+                    "🖥️ Force CPU Mode",
+                    value=st.session_state.get("force_cpu", False),
+                    help="Bắt buộc sử dụng CPU thay vì GPU (hữu ích khi gặp lỗi CUDA)"
+                )
+
+                # Apply configuration button
+                if st.form_submit_button("✅ Áp dụng cấu hình"):
+                    st.session_state.final_results_count = final_results_count
+                    st.session_state.search_aggressiveness = search_aggressiveness
+                    st.session_state.force_cpu = force_cpu
+                    st.success("✅ Cấu hình đã được áp dụng!")
 ```
 
 **UI Components Analysis:**
@@ -206,21 +257,21 @@ def main():
 
 ```python
 # Từ source code app/pages/search.py - Search results display
-def display_search_result(result: Dict[str, Any], result_index: int):
+def display_search_result(result: Dict[str, Any], result_index: int, query: str, pipeline):
     """Display a single search result with enhanced styling and visual hierarchy."""
-    
+
     # Simple result header
     st.markdown(f"**#{result_index} - {result['aid']}**")
     st.markdown(f"**Điểm tổng hợp:** {result['final_score']:.3f}")
-    
+
     # Simple parent law name display
     if result.get("parent_law_name"):
         st.markdown(f"**Tên điều luật:** {result['parent_law_name']}")
-    
-    # Enhanced content section with better formatting
+
+    # Enhanced content section with better formatting and professional styling - Streamlit optimized
     content_text = result["content"]
-    
-    # Improved content formatting with better structure
+
+    # Improved content formatting with better structure and no extra spacing
     if len(content_text) > 200:
         # Split content into paragraphs for better readability
         paragraphs = content_text.split(". ")
@@ -229,24 +280,24 @@ def display_search_result(result: Dict[str, Any], result_index: int):
         for i, para in enumerate(paragraphs, 1):
             if para.strip():
                 formatted_paragraphs.append(f"**{i}.** {para.strip()}")
-        formatted_content = "<br>".join(formatted_paragraphs)
+        formatted_content = "<br>".join(formatted_paragraphs)  # Reduced spacing
     else:
         formatted_content = content_text
-    
-    # Enhanced content layout with expander
+
+    # Enhanced content layout with simple expander like search parameters
     with st.expander("📄 **Nội dung chi tiết**", expanded=True):
         st.markdown(formatted_content)
-    
-    # Enhanced scores section with expander
+
+    # Enhanced scores section with simple expander like search parameters
     with st.expander("📊 **Điểm số từng tầng**", expanded=True):
         # Display scores with simple layout
         model_keys = get_all_model_keys()
-        
+
         for model_key in model_keys:
             score_field = get_score_field_name(model_key)
             display_name = get_display_name(model_key)
             score_value = result.get(score_field, 0.0)
-            
+
             # Add performance indicator based on score value
             performance_indicator = ""
             if score_value >= 0.8:
@@ -255,9 +306,11 @@ def display_search_result(result: Dict[str, Any], result_index: int):
                 performance_indicator = " 🟡"
             else:
                 performance_indicator = " 🔴"
-            
+
             # Simple score display
             st.markdown(f"**{display_name}{performance_indicator}:** {score_value:.3f}")
+
+    # Feedback section removed - system simplified for stability
 ```
 
 **Results Display Features:**
@@ -555,16 +608,15 @@ def render_performance_metrics_tab():
 # Từ source code app/pages/system.py - System status dashboard
 def create_system_health_dashboard(system_data):
     """Create simplified system health dashboard."""
-    
     st.subheader("🏥 System Health Dashboard")
-    
+
     if not system_data:
         st.warning("⚠️ Không thể load dữ liệu hệ thống")
         return
-    
+
     # Overall system status
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         # Check if models are ready
         model_status = system_data.get("model_status", {})
@@ -572,36 +624,36 @@ def create_system_health_dashboard(system_data):
             1 for model in model_status.values() if model.get("status") == "ready"
         )
         total_models = len(model_status)
-        
+
         if total_models > 0:
             health_percentage = (models_ready / total_models) * 100
         else:
             health_percentage = 0
-        
+
         st.metric(
             "🤖 Models Ready",
             f"{models_ready}/{total_models}",
             f"{health_percentage:.1f}%",
             delta_color="normal" if health_percentage >= 80 else "inverse"
         )
-    
+
     with col2:
         # FAISS index status
         faiss_status = system_data.get("faiss_status", {})
         faiss_health = faiss_status.get("health_score", 0.0) * 100
-        
+
         st.metric(
             "🔍 FAISS Index",
             f"{faiss_health:.1f}%",
             delta_color="normal" if faiss_health >= 80 else "inverse"
         )
-    
+
     with col3:
         # Dataset availability
         dataset_status = system_data.get("dataset_status", {})
         overall_stats = dataset_status.get("overall_stats", {})
         data_available = overall_stats.get("data_available", False)
-        
+
         st.metric(
             "📊 Dataset",
             "✅ Available" if data_available else "❌ Not Available",
@@ -941,36 +993,30 @@ st.markdown(
 
 ```python
 # Từ source code app/app.py - Session state management
-# Enhanced page state management to prevent element bleeding
+# Optimized page state management to prevent unnecessary reloads
 if "current_page" not in st.session_state:
     st.session_state.current_page = selected_page_title
     st.session_state.page_load_time = time.time()
 
-# Clear page-specific session states when switching pages
+# Update current page only when actually switching (no rerun)
 if st.session_state.current_page != selected_page_title:
-    # Clear all page-specific states to prevent element bleeding
-    keys_to_clear = [
-        "analysis_page_loaded",
-        "search_page_loaded",
-        "system_page_loaded",
+    # Minimal state clearing - only essential keys
+    essential_keys_to_clear = [
         "comprehensive_eval_results",
         "eval_loading",
         "switch_to_tab2",
-        "pipeline_loaded",
-        "search_results",
-        "search_query",
     ]
-    
-    for key in keys_to_clear:
+
+    for key in essential_keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
-    
-    # Update current page and force clean render
+
+    # Update current page without forcing rerun
     st.session_state.current_page = selected_page_title
     st.session_state.page_load_time = time.time()
-    
-    # Force clean page transition
-    st.rerun()
+
+# Render the selected page with optimized state
+page_options[selected_page_title]()
 ```
 
 **State Management Features:**
@@ -985,13 +1031,13 @@ if st.session_state.current_page != selected_page_title:
 # Từ source code app/pages/search.py - Caching strategies
 @st.cache_data(ttl=config.app.cache_questions_ttl_seconds, show_spinner=False)
 def load_random_questions() -> Tuple[List[str], List[str]]:
-    """Load random questions from training and test datasets với performance optimization."""
+    """Load random questions from training and test datasets"""
     logger.info("Loading random questions from datasets")
     training_questions = []
     test_questions = []
-    
+
     try:
-        # Load training questions với batch processing
+        # Load training questions
         train_file = os.path.join(config.paths.data_dir, "raw", "train.json")
         if os.path.exists(train_file):
             with open(train_file, "r", encoding="utf-8") as f:
@@ -1002,8 +1048,8 @@ def load_random_questions() -> Tuple[List[str], List[str]]:
                     if item.get("question")
                 ]
             logger.info(f"Loaded {len(training_questions)} training questions")
-        
-        # Load test questions với batch processing
+
+        # Load test questions
         test_file = os.path.join(config.paths.data_dir, "raw", "public_test.json")
         if os.path.exists(test_file):
             with open(test_file, "r", encoding="utf-8") as f:
@@ -1014,11 +1060,11 @@ def load_random_questions() -> Tuple[List[str], List[str]]:
                     if item.get("question")
                 ]
             logger.info(f"Loaded {len(test_questions)} test questions")
-        
+
     except Exception as e:
         logger.error(f"Failed to load questions from datasets: {e}")
         st.warning(f"Không thể load câu hỏi từ datasets: {e}")
-    
+
     logger.info(
         f"Total questions loaded: {len(training_questions) + len(test_questions)}"
     )
@@ -1360,11 +1406,11 @@ st.markdown(f"**{display_name}{performance_indicator}:** {score_value:.3f}")
 
 ### **1. Source Code Locations**
 
-- **Main Application**: `app/app.py`
-- **Search Page**: `app/pages/search.py`
-- **Analysis Page**: `app/pages/analysis.py`
-- **System Page**: `app/pages/system.py`
-- **Configuration**: `config/loader.py`
+- **Main Application**: `app/app.py` - Single entry point với lazy loading
+- **Search Page**: `app/pages/search.py` - Function `render_search_page()`
+- **Analysis Page**: `app/pages/analysis.py` - Function `render_analysis_page()`
+- **System Page**: `app/pages/system.py` - Function `main()`
+- **Configuration**: `config/loader.py` - Centralized configuration management
 
 ### **2. Key Dependencies**
 
@@ -1388,25 +1434,53 @@ dependencies = {
 ### **4. UI Architecture Summary**
 
 ```python
-# UI Architecture Overview
+# UI Architecture Overview - LawBot v8.3
 ui_architecture = {
-    "Main App": "Single entry point with modular page system",
-    "Navigation": "Custom sidebar navigation with page state management",
-    "Pages": "3 main pages: Search, Analysis, System",
-    "Components": "Reusable UI components with consistent styling",
-    "State Management": "Session state with cleanup and caching",
-    "Responsive Design": "Column-based layout with mobile support",
-    "Performance": "Lazy loading, caching, and memory optimization"
+    "Main App": "Single entry point với lazy loading để tránh circular import",
+    "Navigation": "Custom sidebar navigation với page state management tối ưu",
+    "Pages": "3 main pages: Search (render_search_page), Analysis (render_analysis_page), System (main)",
+    "Components": "Native Streamlit components với custom styling và form-based interaction",
+    "State Management": "Session state optimization với minimal clearing để tránh reload",
+    "Responsive Design": "Column-based layout với mobile support và expander-based content",
+    "Performance": "TTL-based caching, lazy loading, và form-based interaction để ngăn auto-rerun"
 }
 ```
 
 ---
 
-*This UI technical guide provides comprehensive coverage of the user interface architecture and design patterns implemented in LawBot, ensuring consistency with the actual source code and providing practical examples for implementation and optimization.*)
-        
-        with col4:
-            # Overall health
-            overall_health = (model_health + faiss_health) / 2
-            st.metric(
-                "🏥 Overall",
-                f"{overa
+## 🎯 **Kết luận**
+
+Tài liệu UI Technical Guide này cung cấp hướng dẫn toàn diện về kiến trúc giao diện người dùng và các pattern thiết kế đã được implement trong LawBot v8.3, đảm bảo:
+
+- **Chính xác 100%** với source code hiện tại
+- **Lazy Loading Architecture** để tránh circular import
+- **Form-based Interaction** để ngăn auto-rerun
+- **Session State Optimization** để tránh unnecessary reloads
+- **TTL-based Caching** cho performance tối ưu
+- **Responsive Design** với column-based layout
+
+### **🚀 Để chạy ứng dụng:**
+
+```bash
+# Từ project root
+python run_app.py
+
+# Hoặc
+streamlit run app/app.py
+```
+
+### **📁 Cấu trúc file chính:**
+
+```
+app/
+├── app.py              # Main application entry point
+├── pages/
+│   ├── search.py       # Search page (render_search_page)
+│   ├── analysis.py     # Analysis page (render_analysis_page)
+│   └── system.py       # System page (main)
+└── __init__.py         # Package initialization
+```
+
+---
+
+*This UI technical guide provides comprehensive coverage of the user interface architecture and design patterns implemented in LawBot v8.3, ensuring consistency with the actual source code and providing practical examples for implementation and optimization.*

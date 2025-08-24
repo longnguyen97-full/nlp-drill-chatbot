@@ -1,7 +1,8 @@
 # LawBot Evaluation Guide - Hướng dẫn Đánh giá Toàn diện
+
 ## Comprehensive Evaluation Documentation for LawBot v8.3
 
-**Phiên bản:** 1.0  
+**Phiên bản:** 2.0  
 **Cập nhật:** 2025-01-27  
 **Tương thích:** LawBot v8.3  
 
@@ -233,7 +234,6 @@ def ndcg_at_k(relevant: List[str], retrieved: List[str], k: int,
     
     # Mathematical validation: 0 ≤ NDCG@K ≤ 1
     return max(0.0, min(1.0, ndcg))
-    return len(relevant_retrieved) / len(relevant)
 
 # Usage example
 relevant_docs = ["doc1", "doc2", "doc3"]
@@ -1384,7 +1384,7 @@ Kết quả sẽ được lưu trong `reports/` directory với comprehensive an
 
 ---
 
-**Phiên bản:** 1.0  
+**Phiên bản:** 2.0  
 **Cập nhật:** 2025-01-27  
 **Tương thích:** LawBot v8.3  
 **Tác giả:** LawBot Development Team
